@@ -511,9 +511,14 @@ class ProductTab(QWidget):
             return
 
         try:
-            products, errors = models.batch_import(paths)
+            products, errors, skipped = models.batch_import(paths)
             self.refresh_products()
             message = f"成功导入 {len(products)} 张图片。"
+            if skipped:
+                message += f"\n跳过 {len(skipped)} 张重复图片。"
+                message += "\n" + "\n".join(skipped[:10])
+                if len(skipped) > 10:
+                    message += f"\n... 共 {len(skipped)} 张跳过"
             if errors:
                 message += "\n\n以下文件导入失败:\n" + "\n".join(errors[:10])
                 if len(errors) > 10:

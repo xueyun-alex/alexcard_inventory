@@ -29,12 +29,31 @@ CREATE TABLE IF NOT EXISTS products (
 """
 
 
+def _migrate_schema(conn: sqlite3.Connection) -> None:
+    columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(products)").fetchall()
+    }
+    if "file_hash" not in columns:
+        conn.execute("ALTER TABLE products ADD COLUMN file_hash TEXT")
+    if "image_hash" not in columns:
+        conn.execute("ALTER TABLE products ADD COLUMN image_hash TEXT")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_products_file_hash ON products(file_hash)"
+    )
+
+
 def init_db() -> None:
     """Ensure data directories exist and create tables if needed."""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     PRODUCTS_DIR.mkdir(parents=True, exist_ok=True)
     with get_connection() as conn:
         conn.executescript(_SCHEMA)
+        _migrate_schema(conn)
+        conn.commit()
+
+    from db.models import backfill_product_hashes
+
+    backfill_product_hashes()
 
 
 def get_connection() -> sqlite3.Connection:

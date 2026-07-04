@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+import hashlib
 import shutil
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
-from db.database import PRODUCTS_DIR, get_connection
+import imagehash
+from PIL import Image
+
+from db.database import DATA_DIR, PRODUCTS_DIR, get_connection
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".gif"}
+PHASH_SIMILARITY_THRESHOLD = 5
 
 
 @dataclass
@@ -140,7 +145,85 @@ def collect_image_paths(paths: list[Path]) -> list[Path]:
     return result
 
 
-def import_product(source_path: Path) -> Product:
+def compute_file_hash(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(65536), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def compute_image_hash(path: Path) -> str:
+    with Image.open(path) as image:
+        return str(imagehash.phash(image))
+
+
+def is_visually_similar(
+    hash1: str,
+    hash2: str,
+    threshold: int = PHASH_SIMILARITY_THRESHOLD,
+) -> bool:
+    return imagehash.hex_to_hash(hash1) - imagehash.hex_to_hash(hash2) <= threshold
+
+
+def load_product_hashes() -> tuple[set[str], list[tuple[str, Product]]]:
+    file_hashes: set[str] = set()
+    image_hashes: list[tuple[str, Product]] = []
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM products WHERE file_hash IS NOT NULL OR image_hash IS NOT NULL"
+        ).fetchall()
+    for row in rows:
+        product = _row_to_product(row)
+        if row["file_hash"]:
+            file_hashes.add(row["file_hash"])
+        if row["image_hash"]:
+            image_hashes.append((row["image_hash"], product))
+    return file_hashes, image_hashes
+
+
+def backfill_product_hashes() -> None:
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT id, image_path FROM products WHERE file_hash IS NULL OR image_hash IS NULL"
+        ).fetchall()
+        for row in rows:
+            image_path = DATA_DIR / row["image_path"]
+            if not image_path.is_file():
+                continue
+            try:
+                file_hash = compute_file_hash(image_path)
+                image_hash_value = compute_image_hash(image_path)
+            except Exception:
+                continue
+            conn.execute(
+                "UPDATE products SET file_hash = ?, image_hash = ? WHERE id = ?",
+                (file_hash, image_hash_value, row["id"]),
+            )
+        conn.commit()
+
+
+def _find_duplicate_by_hashes(
+    file_hash: str,
+    image_hash: str,
+    known_file_hashes: set[str],
+    known_image_hashes: list[tuple[str, Product]],
+) -> tuple[Product | None, str | None]:
+    if file_hash in known_file_hashes:
+        return None, "内容重复"
+
+    for existing_hash, product in known_image_hashes:
+        if is_visually_similar(image_hash, existing_hash):
+            return product, f"图片相似（与「{product.name}」）"
+
+    return None, None
+
+
+def import_product(
+    source_path: Path,
+    file_hash: str,
+    image_hash: str,
+) -> Product:
     source_path = Path(source_path)
     if not is_image_file(source_path):
         raise ValueError(f"不支持的图片格式: {source_path.name}")
@@ -148,8 +231,11 @@ def import_product(source_path: Path) -> Product:
     name = source_path.stem
     with get_connection() as conn:
         cursor = conn.execute(
-            "INSERT INTO products (name, image_path) VALUES (?, ?)",
-            (name, ""),
+            """
+            INSERT INTO products (name, image_path, file_hash, image_hash)
+            VALUES (?, ?, ?, ?)
+            """,
+            (name, "", file_hash, image_hash),
         )
         product_id = cursor.lastrowid
         conn.commit()
@@ -173,16 +259,44 @@ def import_product(source_path: Path) -> Product:
     return _row_to_product(row)
 
 
-def batch_import(paths: list[Path]) -> tuple[list[Product], list[str]]:
-    """Import multiple images. Returns (successful products, error messages)."""
+def batch_import(
+    paths: list[Path],
+) -> tuple[list[Product], list[str], list[str]]:
+    """Import multiple images. Returns (products, errors, skipped messages)."""
     products: list[Product] = []
     errors: list[str] = []
+    skipped: list[str] = []
+    known_file_hashes, known_image_hashes = load_product_hashes()
+
     for path in collect_image_paths(paths):
         try:
-            products.append(import_product(path))
+            file_hash = compute_file_hash(path)
+            image_hash = compute_image_hash(path)
         except Exception as exc:
             errors.append(f"{path.name}: {exc}")
-    return products, errors
+            continue
+
+        _existing_product, reason = _find_duplicate_by_hashes(
+            file_hash,
+            image_hash,
+            known_file_hashes,
+            known_image_hashes,
+        )
+        if reason:
+            skipped.append(f"{path.name}: {reason}")
+            continue
+
+        try:
+            product = import_product(path, file_hash, image_hash)
+        except Exception as exc:
+            errors.append(f"{path.name}: {exc}")
+            continue
+
+        products.append(product)
+        known_file_hashes.add(file_hash)
+        known_image_hashes.append((image_hash, product))
+
+    return products, errors, skipped
 
 
 def list_products(category_id: int | None = None) -> list[Product]:
