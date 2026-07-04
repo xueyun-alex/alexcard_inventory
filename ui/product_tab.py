@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QGridLayout,
+    QHBoxLayout,
     QInputDialog,
     QLabel,
     QListWidget,
@@ -40,6 +41,10 @@ GRID_COLUMNS = 6
 
 FILTER_ALL = "all"
 FILTER_UNCATEGORIZED = "uncategorized"
+
+SORT_DEFAULT = "default"
+SORT_ASC = "asc"
+SORT_DESC = "desc"
 
 
 class ProductCard(QWidget):
@@ -189,6 +194,7 @@ class ProductTab(QWidget):
     def __init__(self) -> None:
         super().__init__()
         self._current_filter: str | int = FILTER_ALL
+        self._stock_sort = SORT_DEFAULT
         self._cards: dict[int, ProductCard] = {}
         self._last_clicked_id: int | None = None
         self._load_generation = [0]
@@ -232,15 +238,29 @@ class ProductTab(QWidget):
         self.category_list.dragEnterEvent = self._category_drag_enter  # type: ignore[method-assign]
         self.category_list.dragMoveEvent = self._category_drag_enter  # type: ignore[method-assign]
 
+        right_panel = QWidget()
+        right_layout = QVBoxLayout(right_panel)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(4)
+
+        header = QHBoxLayout()
+        header.addStretch()
+        self.btn_sort_stock = QPushButton("排序")
+        self.btn_sort_stock.setToolTip("按库存（×0、×1、×2…）排序：默认 → 升序 → 降序")
+        self.btn_sort_stock.clicked.connect(self._toggle_stock_sort)
+        header.addWidget(self.btn_sort_stock)
+        right_layout.addLayout(header)
+
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
         self.grid_container = QWidget()
         self.grid_layout = QGridLayout(self.grid_container)
         self.grid_layout.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         self.scroll_area.setWidget(self.grid_container)
+        right_layout.addWidget(self.scroll_area)
 
         splitter.addWidget(self.category_list)
-        splitter.addWidget(self.scroll_area)
+        splitter.addWidget(right_panel)
         splitter.setStretchFactor(1, 1)
         layout.addWidget(splitter)
 
@@ -288,6 +308,61 @@ class ProductTab(QWidget):
         self.refresh_categories()
         self.refresh_products()
 
+    def _fetch_products(self) -> list[Product]:
+        if self._current_filter == FILTER_ALL:
+            return models.list_products(None)
+        if self._current_filter == FILTER_UNCATEGORIZED:
+            return models.list_products(-1)
+        return models.list_products(int(self._current_filter))
+
+    def _sort_products(self, products: list[Product]) -> list[Product]:
+        if self._stock_sort == SORT_ASC:
+            return sorted(products, key=lambda product: product.stock)
+        if self._stock_sort == SORT_DESC:
+            return sorted(products, key=lambda product: product.stock, reverse=True)
+        return products
+
+    def _update_sort_button(self) -> None:
+        labels = {
+            SORT_DEFAULT: "排序",
+            SORT_ASC: "库存升序",
+            SORT_DESC: "库存降序",
+        }
+        self.btn_sort_stock.setText(labels[self._stock_sort])
+
+    def _toggle_stock_sort(self) -> None:
+        cycle = {
+            SORT_DEFAULT: SORT_ASC,
+            SORT_ASC: SORT_DESC,
+            SORT_DESC: SORT_DEFAULT,
+        }
+        self._stock_sort = cycle[self._stock_sort]
+        self._update_sort_button()
+        self._relayout_grid()
+
+    def _relayout_grid(self) -> None:
+        if not self._cards:
+            return
+
+        while self.grid_layout.count():
+            item = self.grid_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(self.grid_container)
+
+        products = self._sort_products(self._fetch_products())
+        ordered_cards: dict[int, ProductCard] = {}
+        for index, product in enumerate(products):
+            card = self._cards.get(product.id)
+            if card is None:
+                self.refresh_products()
+                return
+            ordered_cards[product.id] = card
+            row = index // GRID_COLUMNS
+            col = index % GRID_COLUMNS
+            self.grid_layout.addWidget(card, row, col)
+        self._cards = ordered_cards
+
     def refresh_products(self) -> None:
         self._load_generation[0] += 1
         generation = self._load_generation[0]
@@ -301,12 +376,7 @@ class ProductTab(QWidget):
         self._cards.clear()
         self._last_clicked_id = None
 
-        if self._current_filter == FILTER_ALL:
-            products = models.list_products(None)
-        elif self._current_filter == FILTER_UNCATEGORIZED:
-            products = models.list_products(-1)
-        else:
-            products = models.list_products(int(self._current_filter))
+        products = self._sort_products(self._fetch_products())
 
         for index, product in enumerate(products):
             card = ProductCard(product)
@@ -347,6 +417,8 @@ class ProductTab(QWidget):
         if current is None:
             return
         self._current_filter = current.data(Qt.ItemDataRole.UserRole)
+        self._stock_sort = SORT_DEFAULT
+        self._update_sort_button()
         self.refresh_products()
 
     def _on_card_clicked(self, product_id: int, event: QMouseEvent) -> None:
