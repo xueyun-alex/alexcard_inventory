@@ -1,0 +1,53 @@
+"""Shared async thumbnail loading."""
+
+from __future__ import annotations
+
+import io
+from pathlib import Path
+
+from PIL import Image
+from PySide6.QtCore import QObject, QRunnable, Qt, Signal
+from PySide6.QtGui import QImage, QPixmap
+
+
+class ThumbnailSignals(QObject):
+    loaded = Signal(str, QPixmap)
+
+
+class ThumbnailLoader(QRunnable):
+    """Load a thumbnail in a background thread; key identifies the target cell."""
+
+    def __init__(
+        self,
+        key: str,
+        image_path: Path,
+        size: int,
+        signals: ThumbnailSignals,
+        generation: int,
+        generation_holder: list[int],
+    ) -> None:
+        super().__init__()
+        self.key = key
+        self.image_path = image_path
+        self.size = size
+        self.signals = signals
+        self.generation = generation
+        self.generation_holder = generation_holder
+
+    def run(self) -> None:
+        if self.generation != self.generation_holder[0]:
+            return
+        try:
+            with Image.open(self.image_path) as img:
+                img = img.convert("RGBA")
+                img.thumbnail((self.size, self.size), Image.Resampling.LANCZOS)
+                buffer = io.BytesIO()
+                img.save(buffer, format="PNG")
+                qimage = QImage.fromData(buffer.getvalue(), "PNG")
+                pixmap = QPixmap.fromImage(qimage)
+        except Exception:
+            pixmap = QPixmap(self.size, self.size)
+            pixmap.fill(Qt.GlobalColor.lightGray)
+
+        if self.generation == self.generation_holder[0]:
+            self.signals.loaded.emit(self.key, pixmap)

@@ -2,6 +2,7 @@
 
 from PySide6.QtWidgets import QMainWindow, QTabWidget
 
+from ui.inbound_tab import InboundTab
 from ui.product_tab import ProductTab
 
 
@@ -12,11 +13,11 @@ class MainWindow(QMainWindow):
         self.resize(1200, 800)
 
         tabs = QTabWidget()
-        tabs.addTab(ProductTab(), "产品管理")
-
-        stock_tab = QTabWidget()
-        stock_tab.setEnabled(False)
-        tabs.addTab(stock_tab, "入库")
+        product_tab = ProductTab()
+        inbound_tab = InboundTab()
+        inbound_tab.stock_updated.connect(product_tab.refresh_products)
+        tabs.addTab(product_tab, "产品管理")
+        tabs.addTab(inbound_tab, "入库")
 
         clear_tab = QTabWidget()
         clear_tab.setEnabled(False)

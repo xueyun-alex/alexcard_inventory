@@ -2,21 +2,17 @@
 
 from __future__ import annotations
 
-import io
 from pathlib import Path
 
-from PIL import Image
 from PySide6.QtCore import (
     QMimeData,
-    QObject,
     QPoint,
-    QRunnable,
     Qt,
     QThreadPool,
     Signal,
     Slot,
 )
-from PySide6.QtGui import QDrag, QImage, QMouseEvent, QPixmap
+from PySide6.QtGui import QDrag, QMouseEvent, QPixmap
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
@@ -37,53 +33,13 @@ from PySide6.QtWidgets import (
 
 from db import models
 from db.models import Category, Product
+from ui.thumbnails import ThumbnailLoader, ThumbnailSignals
 
 THUMB_SIZE = 120
 GRID_COLUMNS = 6
 
 FILTER_ALL = "all"
 FILTER_UNCATEGORIZED = "uncategorized"
-
-
-class ThumbnailSignals(QObject):
-    loaded = Signal(int, QPixmap)
-
-
-class ThumbnailLoader(QRunnable):
-    def __init__(
-        self,
-        product_id: int,
-        image_path: Path,
-        size: int,
-        signals: ThumbnailSignals,
-        generation: int,
-        generation_holder: list[int],
-    ) -> None:
-        super().__init__()
-        self.product_id = product_id
-        self.image_path = image_path
-        self.size = size
-        self.signals = signals
-        self.generation = generation
-        self.generation_holder = generation_holder
-
-    def run(self) -> None:
-        if self.generation != self.generation_holder[0]:
-            return
-        try:
-            with Image.open(self.image_path) as img:
-                img = img.convert("RGBA")
-                img.thumbnail((self.size, self.size), Image.Resampling.LANCZOS)
-                buffer = io.BytesIO()
-                img.save(buffer, format="PNG")
-                qimage = QImage.fromData(buffer.getvalue(), "PNG")
-                pixmap = QPixmap.fromImage(qimage)
-        except Exception:
-            pixmap = QPixmap(self.size, self.size)
-            pixmap.fill(Qt.GlobalColor.lightGray)
-
-        if self.generation == self.generation_holder[0]:
-            self.signals.loaded.emit(self.product_id, pixmap)
 
 
 class ProductCard(QWidget):
@@ -351,7 +307,7 @@ class ProductTab(QWidget):
 
             image_path = models.get_product_image_path(product)
             loader = ThumbnailLoader(
-                product.id,
+                str(product.id),
                 image_path,
                 THUMB_SIZE,
                 self._thumb_signals,
@@ -360,8 +316,12 @@ class ProductTab(QWidget):
             )
             self._thread_pool.start(loader)
 
-    @Slot(int, QPixmap)
-    def _on_thumbnail_loaded(self, product_id: int, pixmap: QPixmap) -> None:
+    @Slot(str, QPixmap)
+    def _on_thumbnail_loaded(self, key: str, pixmap: QPixmap) -> None:
+        try:
+            product_id = int(key)
+        except ValueError:
+            return
         card = self._cards.get(product_id)
         if card is not None:
             card.set_pixmap(pixmap)

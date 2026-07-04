@@ -35,6 +35,16 @@ class Product:
     created_at: str
 
 
+@dataclass
+class ProductMatchRow:
+    id: int
+    name: str
+    image_path: str
+    stock: int
+    image_hash: str | None
+    embedding: bytes | None
+
+
 def _row_to_category(row: sqlite3.Row) -> Category:
     return Category(
         id=row["id"],
@@ -158,6 +168,10 @@ def compute_image_hash(path: Path) -> str:
         return str(imagehash.phash(image))
 
 
+def compute_image_hash_pil(image: Image.Image) -> str:
+    return str(imagehash.phash(image.convert("RGB")))
+
+
 def is_visually_similar(
     hash1: str,
     hash2: str,
@@ -256,7 +270,152 @@ def import_product(
             "SELECT * FROM products WHERE id = ?", (product_id,)
         ).fetchone()
 
+    _compute_and_save_embedding(product_id, dest_path)
     return _row_to_product(row)
+
+
+def _compute_and_save_embedding(product_id: int, image_path: Path) -> None:
+    try:
+        from core.embedder import ClipEmbedder
+        from settings.config import load_config, resolve_config_path
+
+        config = load_config()
+        model_path = resolve_config_path(config, "clip_model_path")
+        if model_path is None or not model_path.is_file():
+            return
+        embedder = ClipEmbedder(model_path)
+        vec = embedder.embed_path(image_path)
+        save_product_embedding(product_id, ClipEmbedder.to_blob(vec))
+    except Exception:
+        return
+
+
+def save_product_embedding(product_id: int, blob: bytes) -> None:
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE products SET embedding = ? WHERE id = ?",
+            (blob, product_id),
+        )
+        conn.commit()
+
+
+def backfill_product_embeddings() -> None:
+    try:
+        from core.embedder import ClipEmbedder
+        from settings.config import load_config, resolve_config_path
+
+        config = load_config()
+        model_path = resolve_config_path(config, "clip_model_path")
+        if model_path is None or not model_path.is_file():
+            print(
+                "提示: CLIP 模型未找到，跳过 embedding 补算。"
+                "请按 README 下载模型到 data/models/。"
+            )
+            return
+        embedder = ClipEmbedder(model_path)
+    except Exception as exc:
+        print(f"提示: embedding 补算跳过 ({exc})")
+        return
+
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT id, image_path FROM products WHERE embedding IS NULL"
+        ).fetchall()
+        for row in rows:
+            image_path = DATA_DIR / row["image_path"]
+            if not image_path.is_file():
+                continue
+            try:
+                vec = embedder.embed_path(image_path)
+                conn.execute(
+                    "UPDATE products SET embedding = ? WHERE id = ?",
+                    (ClipEmbedder.to_blob(vec), row["id"]),
+                )
+            except Exception:
+                continue
+        conn.commit()
+
+
+def load_products_for_matching() -> list[ProductMatchRow]:
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, name, image_path, stock, image_hash, embedding
+            FROM products
+            WHERE image_path != '' AND embedding IS NOT NULL
+            ORDER BY id
+            """
+        ).fetchall()
+    return [
+        ProductMatchRow(
+            id=row["id"],
+            name=row["name"],
+            image_path=row["image_path"],
+            stock=row["stock"],
+            image_hash=row["image_hash"],
+            embedding=row["embedding"],
+        )
+        for row in rows
+    ]
+
+
+def get_product(product_id: int) -> Product | None:
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM products WHERE id = ?", (product_id,)
+        ).fetchone()
+    if row is None:
+        return None
+    return _row_to_product(row)
+
+
+def increment_stock(
+    product_id: int,
+    delta: int,
+    source: str,
+    image_path: str | None = None,
+    *,
+    conn: sqlite3.Connection | None = None,
+) -> None:
+    def _run(connection: sqlite3.Connection) -> None:
+        connection.execute(
+            "UPDATE products SET stock = stock + ? WHERE id = ?",
+            (delta, product_id),
+        )
+        connection.execute(
+            """
+            INSERT INTO inventory_logs (product_id, delta, source, image_path)
+            VALUES (?, ?, ?, ?)
+            """,
+            (product_id, delta, source, image_path),
+        )
+
+    if conn is not None:
+        _run(conn)
+        return
+
+    with get_connection() as connection:
+        _run(connection)
+        connection.commit()
+
+
+def apply_inbound_batch(
+    items: list[tuple[int, str | None]],
+) -> int:
+    """Apply multiple inbound increments in one transaction."""
+    if not items:
+        return 0
+    with get_connection() as conn:
+        for product_id, image_path in items:
+            increment_stock(
+                product_id,
+                delta=1,
+                source="inbound",
+                image_path=image_path,
+                conn=conn,
+            )
+        conn.commit()
+    return len(items)
 
 
 def batch_import(

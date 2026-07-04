@@ -29,6 +29,19 @@ CREATE TABLE IF NOT EXISTS products (
 """
 
 
+_INVENTORY_LOGS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS inventory_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    product_id INTEGER NOT NULL REFERENCES products(id),
+    delta INTEGER NOT NULL,
+    source TEXT NOT NULL,
+    image_path TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+);
+CREATE INDEX IF NOT EXISTS idx_inventory_logs_product ON inventory_logs(product_id);
+"""
+
+
 def _migrate_schema(conn: sqlite3.Connection) -> None:
     columns = {
         row[1] for row in conn.execute("PRAGMA table_info(products)").fetchall()
@@ -37,9 +50,12 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE products ADD COLUMN file_hash TEXT")
     if "image_hash" not in columns:
         conn.execute("ALTER TABLE products ADD COLUMN image_hash TEXT")
+    if "embedding" not in columns:
+        conn.execute("ALTER TABLE products ADD COLUMN embedding BLOB")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_products_file_hash ON products(file_hash)"
     )
+    conn.executescript(_INVENTORY_LOGS_SCHEMA)
 
 
 def init_db() -> None:
@@ -51,9 +67,10 @@ def init_db() -> None:
         _migrate_schema(conn)
         conn.commit()
 
-    from db.models import backfill_product_hashes
+    from db.models import backfill_product_embeddings, backfill_product_hashes
 
     backfill_product_hashes()
+    backfill_product_embeddings()
 
 
 def get_connection() -> sqlite3.Connection:
