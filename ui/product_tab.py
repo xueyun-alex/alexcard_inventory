@@ -211,7 +211,7 @@ class ProductTab(QWidget):
         btn_new_category.clicked.connect(self.create_category_dialog)
         btn_import.clicked.connect(self.import_images_dialog)
         btn_move.clicked.connect(self.move_selected_products)
-        btn_refresh.clicked.connect(self.refresh_products)
+        btn_refresh.clicked.connect(self.refresh_all)
         toolbar.addWidget(btn_new_category)
         toolbar.addWidget(btn_import)
         toolbar.addWidget(btn_move)
@@ -250,30 +250,43 @@ class ProductTab(QWidget):
         if item is not None:
             current_data = item.data(Qt.ItemDataRole.UserRole)
 
+        counts = models.count_products_by_category()
+        total_count = sum(counts.values())
+        uncategorized_count = counts.get(None, 0)
+
         self.category_list.clear()
 
-        all_item = QListWidgetItem("全部")
+        all_item = QListWidgetItem(f"全部 ({total_count})")
         all_item.setData(Qt.ItemDataRole.UserRole, FILTER_ALL)
         self.category_list.addItem(all_item)
 
-        uncategorized_item = QListWidgetItem("未归类")
+        uncategorized_item = QListWidgetItem(f"未归类 ({uncategorized_count})")
         uncategorized_item.setData(Qt.ItemDataRole.UserRole, FILTER_UNCATEGORIZED)
         self.category_list.addItem(uncategorized_item)
 
         for category in models.list_categories():
-            cat_item = QListWidgetItem(category.name)
+            count = counts.get(category.id, 0)
+            cat_item = QListWidgetItem(f"{category.name} ({count})")
             cat_item.setData(Qt.ItemDataRole.UserRole, category.id)
             self.category_list.addItem(cat_item)
 
-        restored = False
-        for i in range(self.category_list.count()):
-            list_item = self.category_list.item(i)
-            if list_item.data(Qt.ItemDataRole.UserRole) == current_data:
-                self.category_list.setCurrentItem(list_item)
-                restored = True
-                break
-        if not restored:
-            self.category_list.setCurrentRow(0)
+        self.category_list.blockSignals(True)
+        try:
+            restored = False
+            for i in range(self.category_list.count()):
+                list_item = self.category_list.item(i)
+                if list_item.data(Qt.ItemDataRole.UserRole) == current_data:
+                    self.category_list.setCurrentItem(list_item)
+                    restored = True
+                    break
+            if not restored:
+                self.category_list.setCurrentRow(0)
+        finally:
+            self.category_list.blockSignals(False)
+
+    def refresh_all(self) -> None:
+        self.refresh_categories()
+        self.refresh_products()
 
     def refresh_products(self) -> None:
         self._load_generation[0] += 1
@@ -472,6 +485,7 @@ class ProductTab(QWidget):
 
         try:
             products, errors, skipped = models.batch_import(paths)
+            self.refresh_categories()
             self.refresh_products()
             message = f"成功导入 {len(products)} 张图片。"
             if skipped:
@@ -516,6 +530,7 @@ class ProductTab(QWidget):
 
         try:
             models.move_products(product_ids, category_id)
+            self.refresh_categories()
             self.refresh_products()
             event.acceptProposedAction()
         except Exception as exc:
@@ -547,6 +562,7 @@ class ProductTab(QWidget):
 
         try:
             models.move_products(product_ids, dialog.selected_category_id)
+            self.refresh_categories()
             self.refresh_products()
         except Exception as exc:
             QMessageBox.warning(self, "错误", str(exc))
@@ -584,6 +600,7 @@ class ProductTab(QWidget):
         try:
             for pid in product_ids:
                 models.delete_product(pid)
+            self.refresh_categories()
             self.refresh_products()
         except Exception as exc:
             QMessageBox.warning(self, "错误", str(exc))

@@ -113,6 +113,15 @@ def count_products_in_category(category_id: int) -> int:
         return row["cnt"]
 
 
+def count_products_by_category() -> dict[int | None, int]:
+    """Return product counts keyed by category_id. None key = uncategorized."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT category_id, COUNT(*) AS cnt FROM products GROUP BY category_id"
+        ).fetchall()
+        return {row["category_id"]: row["cnt"] for row in rows}
+
+
 def delete_category(category_id: int) -> int:
     """Delete category. Returns count of products that were in this category."""
     count = count_products_in_category(category_id)
