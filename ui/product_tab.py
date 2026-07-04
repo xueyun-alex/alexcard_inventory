@@ -604,16 +604,26 @@ class ProductTab(QWidget):
             QMessageBox.warning(self, "错误", str(exc))
 
     def delete_product_confirm(self, product: Product) -> None:
+        product_ids = self.selected_product_ids()
+        if product.id not in product_ids:
+            product_ids = [product.id]
+
+        if len(product_ids) == 1:
+            message = f"确定删除产品「{product.name}」？"
+        else:
+            message = f"确定删除选中的 {len(product_ids)} 个产品？"
+
         reply = QMessageBox.question(
             self,
             "确认删除",
-            f"确定删除产品「{product.name}」？",
+            message,
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
         try:
-            models.delete_product(product.id)
+            for pid in product_ids:
+                models.delete_product(pid)
             self.refresh_products()
         except Exception as exc:
             QMessageBox.warning(self, "错误", str(exc))
