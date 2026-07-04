@@ -103,22 +103,25 @@ class ProductCard(QWidget):
         self.image_label = QLabel()
         self.image_label.setFixedSize(THUMB_SIZE, THUMB_SIZE)
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.image_label.setStyleSheet("background-color: #e0e0e0; border: 1px solid #ccc;")
         self.image_label.setScaledContents(False)
+        self.image_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
 
         self.stock_label = QLabel(f"×{product.stock}")
         self.stock_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.stock_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
 
         self.name_label = QLabel(product.name)
         self.name_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.name_label.setWordWrap(True)
         self.name_label.setMaximumWidth(THUMB_SIZE + 8)
+        self.name_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
 
         layout.addWidget(self.image_label)
         layout.addWidget(self.stock_label)
         layout.addWidget(self.name_label)
 
         self.setFixedWidth(THUMB_SIZE + 16)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_context_menu)
         self._update_style()
@@ -141,9 +144,27 @@ class ProductCard(QWidget):
 
     def _update_style(self) -> None:
         if self._selected:
-            self.setStyleSheet("ProductCard { border: 2px solid #0078d4; border-radius: 4px; }")
+            self.setStyleSheet(
+                "ProductCard {"
+                " background-color: #e8f4fd;"
+                " border: 2px solid #0078d4;"
+                " border-radius: 4px;"
+                "}"
+            )
+            self.image_label.setStyleSheet(
+                "background-color: #d0e8fc; border: 2px solid #0078d4; border-radius: 2px;"
+            )
         else:
-            self.setStyleSheet("ProductCard { border: 2px solid transparent; }")
+            self.setStyleSheet(
+                "ProductCard {"
+                " background-color: transparent;"
+                " border: 2px solid transparent;"
+                " border-radius: 4px;"
+                "}"
+            )
+            self.image_label.setStyleSheet(
+                "background-color: #e0e0e0; border: 1px solid #ccc;"
+            )
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
