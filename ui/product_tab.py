@@ -14,6 +14,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QDrag, QMouseEvent, QPixmap
 from PySide6.QtWidgets import (
+    QAbstractSpinBox,
     QDialog,
     QDialogButtonBox,
     QGridLayout,
@@ -26,6 +27,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSpinBox,
     QSplitter,
     QToolBar,
     QVBoxLayout,
@@ -47,10 +49,51 @@ SORT_ASC = "asc"
 SORT_DESC = "desc"
 
 
+class StockAdjustDialog(QDialog):
+    def __init__(self, product_count: int, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("修改库存")
+
+        layout = QVBoxLayout(self)
+        if product_count == 1:
+            hint = "输入增减数量（正数增加，负数减少）："
+        else:
+            hint = f"将为选中的 {product_count} 个产品统一调整库存（正数增加，负数减少）："
+        layout.addWidget(QLabel(hint))
+
+        stepper = QHBoxLayout()
+        self.btn_decrease = QPushButton("−")
+        self.btn_decrease.setFixedWidth(36)
+        self.value_spin = QSpinBox()
+        self.value_spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+        self.value_spin.setRange(-99999, 99999)
+        self.value_spin.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.btn_increase = QPushButton("+")
+        self.btn_increase.setFixedWidth(36)
+        self.btn_decrease.clicked.connect(lambda: self.value_spin.setValue(self.value_spin.value() - 1))
+        self.btn_increase.clicked.connect(lambda: self.value_spin.setValue(self.value_spin.value() + 1))
+        stepper.addWidget(self.btn_decrease)
+        stepper.addWidget(self.value_spin, stretch=1)
+        stepper.addWidget(self.btn_increase)
+        layout.addLayout(stepper)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    @property
+    def delta(self) -> int:
+        return self.value_spin.value()
+
+
 class ProductCard(QWidget):
     clicked = Signal(int, object)  # product_id, QMouseEvent
     rename_requested = Signal(object)
     delete_requested = Signal(object)
+    stock_adjust_requested = Signal(object)
 
     def __init__(self, product: Product, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -103,6 +146,10 @@ class ProductCard(QWidget):
         )
         self.image_label.setPixmap(scaled)
 
+    def update_stock(self, stock: int) -> None:
+        self.product.stock = stock
+        self.stock_label.setText(f"×{stock}")
+
     def _update_style(self) -> None:
         if self._selected:
             self.setStyleSheet(
@@ -134,10 +181,13 @@ class ProductCard(QWidget):
 
     def _show_context_menu(self, pos: QPoint) -> None:
         menu = QMenu(self)
+        stock_action = menu.addAction("修改库存")
         rename_action = menu.addAction("重命名")
         delete_action = menu.addAction("删除")
         action = menu.exec(self.mapToGlobal(pos))
-        if action == rename_action:
+        if action == stock_action:
+            self.stock_adjust_requested.emit(self.product)
+        elif action == rename_action:
             self.rename_requested.emit(self.product)
         elif action == delete_action:
             self.delete_requested.emit(self.product)
@@ -383,6 +433,7 @@ class ProductTab(QWidget):
             card.clicked.connect(self._on_card_clicked)
             card.rename_requested.connect(self.rename_product_dialog)
             card.delete_requested.connect(self.delete_product_confirm)
+            card.stock_adjust_requested.connect(self.modify_stock_dialog)
             row = index // GRID_COLUMNS
             col = index % GRID_COLUMNS
             self.grid_layout.addWidget(card, row, col)
@@ -636,6 +687,33 @@ class ProductTab(QWidget):
             models.move_products(product_ids, dialog.selected_category_id)
             self.refresh_categories()
             self.refresh_products()
+        except Exception as exc:
+            QMessageBox.warning(self, "错误", str(exc))
+
+    def modify_stock_dialog(self, product: Product) -> None:
+        product_ids = self.selected_product_ids()
+        if product.id not in product_ids:
+            product_ids = [product.id]
+
+        dialog = StockAdjustDialog(len(product_ids), self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        delta = dialog.delta
+        if delta == 0:
+            return
+
+        try:
+            for product_id in product_ids:
+                models.increment_stock(product_id, delta, "manual")
+                updated = models.get_product(product_id)
+                if updated is None:
+                    continue
+                card = self._cards.get(product_id)
+                if card is not None:
+                    card.update_stock(updated.stock)
+            if self._stock_sort != SORT_DEFAULT:
+                self._relayout_grid()
         except Exception as exc:
             QMessageBox.warning(self, "错误", str(exc))
 
