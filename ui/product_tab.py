@@ -94,6 +94,7 @@ class ProductCard(QWidget):
     rename_requested = Signal(object)
     delete_requested = Signal(object)
     stock_adjust_requested = Signal(object)
+    move_requested = Signal(object)
 
     def __init__(self, product: Product, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -181,11 +182,14 @@ class ProductCard(QWidget):
 
     def _show_context_menu(self, pos: QPoint) -> None:
         menu = QMenu(self)
+        move_action = menu.addAction("移动到产品类")
         stock_action = menu.addAction("修改库存")
         rename_action = menu.addAction("重命名")
         delete_action = menu.addAction("删除")
         action = menu.exec(self.mapToGlobal(pos))
-        if action == stock_action:
+        if action == move_action:
+            self.move_requested.emit(self.product)
+        elif action == stock_action:
             self.stock_adjust_requested.emit(self.product)
         elif action == rename_action:
             self.rename_requested.emit(self.product)
@@ -440,6 +444,7 @@ class ProductTab(QWidget):
             card.rename_requested.connect(self.rename_product_dialog)
             card.delete_requested.connect(self.delete_product_confirm)
             card.stock_adjust_requested.connect(self.modify_stock_dialog)
+            card.move_requested.connect(self.move_products_dialog)
             row = index // GRID_COLUMNS
             col = index % GRID_COLUMNS
             self.grid_layout.addWidget(card, row, col)
@@ -682,7 +687,15 @@ class ProductTab(QWidget):
         if not product_ids:
             QMessageBox.information(self, "提示", "请先选择要移动的产品。")
             return
+        self._move_products(product_ids)
 
+    def move_products_dialog(self, product: Product) -> None:
+        product_ids = self.selected_product_ids()
+        if product.id not in product_ids:
+            product_ids = [product.id]
+        self._move_products(product_ids)
+
+    def _move_products(self, product_ids: list[int]) -> None:
         categories = models.list_categories()
         if not categories:
             reply = QMessageBox.question(
