@@ -18,6 +18,8 @@ KIND_LABELS: dict[str, str] = {
     "category_create": "新建产品类",
     "category_rename": "重命名产品类",
     "category_delete": "删除产品类",
+    "product_create": "新增",
+    "product_create_batch": "新增",
     "product_rename": "重命名产品",
     "product_delete": "删除产品",
 }
@@ -141,6 +143,16 @@ def format_category_move_summary(
     return f"移动 {count} 个产品归类"
 
 
+def format_product_create_batch_summary(
+    conn: sqlite3.Connection,
+    products: list[dict],
+) -> str:
+    count = len(products)
+    if count == 1:
+        return f"新增产品：{products[0]['name']}"
+    return f"新增 {count} 个产品"
+
+
 def format_stock_batch_summary(
     conn: sqlite3.Connection,
     entries: list[dict],
@@ -157,6 +169,14 @@ def format_stock_batch_summary(
         sign = f"+{delta}" if delta > 0 else str(delta)
         return f"「{name}」库存 {sign}（{source_label}）"
     return f"{len(entries)} 项库存变更（{source_label}）"
+
+
+def _product_create_payloads(log: ChangeLog) -> list[dict]:
+    if log.kind == "product_create":
+        return [log.payload["product"]]
+    if log.kind == "product_create_batch":
+        return log.payload.get("products", [])
+    return []
 
 
 def check_revert_would_negative_stock(log: ChangeLog) -> list[tuple[str, int]]:
@@ -185,6 +205,24 @@ def check_revert_would_negative_stock(log: ChangeLog) -> list[tuple[str, int]]:
     return warnings
 
 
+def check_revert_product_create_warnings(log: ChangeLog) -> list[str]:
+    """Return warnings when reverting a product create would delete products with stock."""
+    if log.kind not in ("product_create", "product_create_batch"):
+        return []
+    warnings: list[str] = []
+    with get_connection() as conn:
+        for product in _product_create_payloads(log):
+            row = conn.execute(
+                "SELECT name, stock FROM products WHERE id = ?",
+                (product["id"],),
+            ).fetchone()
+            if row is None:
+                warnings.append(f"产品「{product['name']}」已不存在")
+            elif row["stock"] > 0:
+                warnings.append(f"「{row['name']}」当前库存为 {row['stock']}，回退将删除该产品")
+    return warnings
+
+
 def revert_change(log_id: int) -> None:
     log = get_change_log(log_id)
     if log is None:
@@ -203,6 +241,8 @@ def revert_change(log_id: int) -> None:
             _revert_category_rename(conn, log)
         elif log.kind == "category_delete":
             _revert_category_delete(conn, log)
+        elif log.kind in ("product_create", "product_create_batch"):
+            _revert_product_create(conn, log)
         elif log.kind == "product_rename":
             _revert_product_rename(conn, log)
         elif log.kind == "product_delete":
@@ -330,6 +370,23 @@ def _revert_category_delete(conn: sqlite3.Connection, log: ChangeLog) -> None:
             "UPDATE products SET category_id = ? WHERE id = ?",
             (target_id, product_id),
         )
+
+
+def _revert_product_create(conn: sqlite3.Connection, log: ChangeLog) -> None:
+    for product in _product_create_payloads(log):
+        product_id = product["id"]
+        row = conn.execute(
+            "SELECT id FROM products WHERE id = ?", (product_id,)
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"产品「{product['name']}」已不存在，无法回退")
+        conn.execute(
+            "DELETE FROM inventory_logs WHERE product_id = ?", (product_id,)
+        )
+        conn.execute("DELETE FROM products WHERE id = ?", (product_id,))
+        product_dir = PRODUCTS_DIR / str(product_id)
+        if product_dir.exists():
+            shutil.rmtree(product_dir)
 
 
 def _revert_product_rename(conn: sqlite3.Connection, log: ChangeLog) -> None:

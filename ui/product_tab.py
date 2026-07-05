@@ -761,6 +761,7 @@ class ProductTab(QWidget):
             products, errors, duplicates = models.batch_import(paths)
             self.refresh_categories()
             self.refresh_products()
+            self.data_changed.emit()
 
             if duplicates:
                 DuplicateProductsDialog(duplicates, parent=self).exec()

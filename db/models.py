@@ -350,6 +350,19 @@ def _find_duplicate_by_hashes(
     return None, None
 
 
+def _product_row_to_payload(row: sqlite3.Row) -> dict:
+    return {
+        "id": row["id"],
+        "category_id": row["category_id"],
+        "name": row["name"],
+        "image_path": row["image_path"],
+        "stock": row["stock"],
+        "created_at": row["created_at"],
+        "file_hash": row["file_hash"],
+        "image_hash": row["image_hash"],
+    }
+
+
 def import_product(
     source_path: Path,
     file_hash: str,
@@ -606,6 +619,37 @@ def batch_import(
         products.append(product)
         known_file_hashes[file_hash] = product
         known_image_hashes.append((image_hash, product))
+
+    if products:
+        from db import changelog
+
+        with get_connection() as conn:
+            payloads = []
+            for product in products:
+                row = conn.execute(
+                    "SELECT * FROM products WHERE id = ?", (product.id,)
+                ).fetchone()
+                if row is not None:
+                    payloads.append(_product_row_to_payload(row))
+            if not payloads:
+                return products, errors, duplicates
+            if len(payloads) == 1:
+                product = payloads[0]
+                changelog.record_change(
+                    "product_create",
+                    f"新增产品：{product['name']}",
+                    {"product": product},
+                    conn=conn,
+                )
+            else:
+                summary = changelog.format_product_create_batch_summary(conn, payloads)
+                changelog.record_change(
+                    "product_create_batch",
+                    summary,
+                    {"products": payloads},
+                    conn=conn,
+                )
+            conn.commit()
 
     return products, errors, duplicates
 

@@ -81,6 +81,7 @@ class HistoryTab(QWidget):
             return
 
         negative = changelog.check_revert_would_negative_stock(log)
+        create_warnings = changelog.check_revert_product_create_warnings(log)
         if negative:
             details = "\n".join(
                 f"· {name} 将变为 {stock}" for name, stock in negative
@@ -89,6 +90,16 @@ class HistoryTab(QWidget):
                 self,
                 "确认回退",
                 f"回退后以下产品库存将为负数：\n{details}\n\n是否继续？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+        elif create_warnings:
+            details = "\n".join(f"· {warning}" for warning in create_warnings)
+            reply = QMessageBox.question(
+                self,
+                "确认回退",
+                f"回退新增产品将删除对应产品：\n{details}\n\n是否继续？",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             )
             if reply != QMessageBox.StandardButton.Yes:
