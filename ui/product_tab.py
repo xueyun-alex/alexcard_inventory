@@ -12,7 +12,7 @@ from PySide6.QtCore import (
     Signal,
     Slot,
 )
-from PySide6.QtGui import QDrag, QMouseEvent, QPixmap
+from PySide6.QtGui import QDrag, QKeySequence, QMouseEvent, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QAbstractSpinBox,
     QDialog,
@@ -290,8 +290,8 @@ class ProductTab(QWidget):
         self.category_list.dragEnterEvent = self._category_drag_enter  # type: ignore[method-assign]
         self.category_list.dragMoveEvent = self._category_drag_enter  # type: ignore[method-assign]
 
-        right_panel = QWidget()
-        right_layout = QVBoxLayout(right_panel)
+        self.right_panel = QWidget()
+        right_layout = QVBoxLayout(self.right_panel)
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(4)
 
@@ -311,8 +311,12 @@ class ProductTab(QWidget):
         self.scroll_area.setWidget(self.grid_container)
         right_layout.addWidget(self.scroll_area)
 
+        select_all_shortcut = QShortcut(QKeySequence.StandardKey.SelectAll, self.right_panel)
+        select_all_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        select_all_shortcut.activated.connect(self._select_all_products)
+
         splitter.addWidget(self.category_list)
-        splitter.addWidget(right_panel)
+        splitter.addWidget(self.right_panel)
         splitter.setStretchFactor(1, 1)
         layout.addWidget(splitter)
 
@@ -500,6 +504,14 @@ class ProductTab(QWidget):
 
     def selected_product_ids(self) -> list[int]:
         return [pid for pid, card in self._cards.items() if card.is_selected()]
+
+    def _select_all_products(self) -> None:
+        if not self._cards:
+            return
+        for card in self._cards.values():
+            card.set_selected(True)
+        ids = list(self._cards.keys())
+        self._last_clicked_id = ids[-1]
 
     def create_category_dialog(self) -> None:
         name, ok = QInputDialog.getText(self, "新建产品类", "名称:")
