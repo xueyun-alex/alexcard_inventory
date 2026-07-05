@@ -67,10 +67,9 @@ def init_db() -> None:
         _migrate_schema(conn)
         conn.commit()
 
-    from db.models import backfill_product_embeddings, backfill_product_hashes
+    from db.models import backfill_product_hashes
 
     backfill_product_hashes()
-    backfill_product_embeddings()
 
 
 def get_connection() -> sqlite3.Connection:

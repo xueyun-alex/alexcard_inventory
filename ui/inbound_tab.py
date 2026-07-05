@@ -23,14 +23,13 @@ from PySide6.QtWidgets import (
 )
 
 from core.detector import detect_cards
-from core.embedder import ClipEmbedder
 from core.inventory import apply_inbound
 from core.matcher import ProductMatcher
 from core.types import RecognitionResult
 from db import models
 from db.database import DATA_DIR
-from db.models import compute_image_hash_pil
-from settings.config import load_config, resolve_config_path
+from db.models import compute_file_hash, compute_image_hash, compute_image_hash_pil
+from settings.config import load_config
 from ui.match_dialog import MatchConfirmDialog
 
 TEMP_INBOUND_DIR = DATA_DIR / "temp" / "inbound"
@@ -64,24 +63,22 @@ class RecognitionWorker(QThread):
     def run(self) -> None:
         try:
             config = load_config()
-            model_path = resolve_config_path(config, "clip_model_path")
-            if model_path is None or not model_path.is_file():
-                raise FileNotFoundError(
-                    "CLIP 模型未找到。请按 README 下载 clip-vit-base-patch32.onnx。"
-                )
-
-            embedder = ClipEmbedder(model_path)
-            matcher = ProductMatcher(embedder, config)
+            matcher = ProductMatcher()
             matcher.build_index()
 
             if matcher.product_count == 0:
-                raise RuntimeError("产品库为空或尚无 embedding，请先导入产品并确保 CLIP 模型可用。")
+                raise RuntimeError("产品库为空或尚无 hash，请先导入产品。")
 
             TEMP_INBOUND_DIR.mkdir(parents=True, exist_ok=True)
 
             total_crops = 0
             crop_plan: list[tuple[Path, object]] = []
+            source_hashes: dict[Path, tuple[str, str]] = {}
             for source_path in self._image_paths:
+                source_hashes[source_path] = (
+                    compute_file_hash(source_path),
+                    compute_image_hash(source_path),
+                )
                 crops = detect_cards(source_path, config)
                 for crop in crops:
                     crop_plan.append((source_path, crop))
@@ -89,10 +86,13 @@ class RecognitionWorker(QThread):
 
             results: list[RecognitionResult] = []
             for index, (source_path, crop) in enumerate(crop_plan, start=1):
-                crop_phash = compute_image_hash_pil(
-                    Image.fromarray(cv2.cvtColor(crop.image, cv2.COLOR_BGR2RGB))
-                )
-                match = matcher.match_crop(crop.image, crop_phash)
+                source_file_hash, source_image_hash = source_hashes[source_path]
+                match = matcher.match_by_hashes(source_file_hash, source_image_hash)
+                if match.product_id is None:
+                    crop_phash = compute_image_hash_pil(
+                        Image.fromarray(cv2.cvtColor(crop.image, cv2.COLOR_BGR2RGB))
+                    )
+                    match = matcher.match_by_hashes(None, crop_phash)
 
                 crop_filename = f"{uuid.uuid4().hex}.png"
                 crop_path = TEMP_INBOUND_DIR / crop_filename

@@ -41,8 +41,8 @@ class ProductMatchRow:
     name: str
     image_path: str
     stock: int
+    file_hash: str | None
     image_hash: str | None
-    embedding: bytes | None
 
 
 def _row_to_category(row: sqlite3.Row) -> Category:
@@ -172,6 +172,10 @@ def compute_file_hash(path: Path) -> str:
     return digest.hexdigest()
 
 
+def compute_bytes_hash(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
 def compute_image_hash(path: Path) -> str:
     with Image.open(path) as image:
         return str(imagehash.phash(image))
@@ -181,16 +185,47 @@ def compute_image_hash_pil(image: Image.Image) -> str:
     return str(imagehash.phash(image.convert("RGB")))
 
 
+def phash_hamming_distance(hash1: str, hash2: str) -> int:
+    return imagehash.hex_to_hash(hash1) - imagehash.hex_to_hash(hash2)
+
+
 def is_visually_similar(
     hash1: str,
     hash2: str,
     threshold: int = PHASH_SIMILARITY_THRESHOLD,
 ) -> bool:
-    return imagehash.hex_to_hash(hash1) - imagehash.hex_to_hash(hash2) <= threshold
+    return phash_hamming_distance(hash1, hash2) <= threshold
 
 
-def load_product_hashes() -> tuple[set[str], list[tuple[str, Product]]]:
-    file_hashes: set[str] = set()
+def find_product_by_hashes(
+    file_hash: str | None,
+    image_hash: str,
+    known_file_hashes: dict[str, Product],
+    known_image_hashes: list[tuple[str, Product]],
+) -> tuple[Product | None, str | None, float | None]:
+    """Return (product, reason, score). SHA match score=1.0; pHash score=1-dist/64."""
+    if file_hash is not None:
+        product = known_file_hashes.get(file_hash)
+        if product is not None:
+            return product, "内容一致", 1.0
+
+    best_product: Product | None = None
+    best_distance = PHASH_SIMILARITY_THRESHOLD + 1
+    for existing_hash, candidate in known_image_hashes:
+        distance = phash_hamming_distance(image_hash, existing_hash)
+        if distance <= PHASH_SIMILARITY_THRESHOLD and distance < best_distance:
+            best_distance = distance
+            best_product = candidate
+
+    if best_product is not None:
+        score = 1.0 - best_distance / 64.0
+        return best_product, "视觉相似", score
+
+    return None, None, None
+
+
+def load_product_hashes() -> tuple[dict[str, Product], list[tuple[str, Product]]]:
+    file_hashes: dict[str, Product] = {}
     image_hashes: list[tuple[str, Product]] = []
     with get_connection() as conn:
         rows = conn.execute(
@@ -199,7 +234,7 @@ def load_product_hashes() -> tuple[set[str], list[tuple[str, Product]]]:
     for row in rows:
         product = _row_to_product(row)
         if row["file_hash"]:
-            file_hashes.add(row["file_hash"])
+            file_hashes[row["file_hash"]] = product
         if row["image_hash"]:
             image_hashes.append((row["image_hash"], product))
     return file_hashes, image_hashes
@@ -229,7 +264,7 @@ def backfill_product_hashes() -> None:
 def _find_duplicate_by_hashes(
     file_hash: str,
     image_hash: str,
-    known_file_hashes: set[str],
+    known_file_hashes: dict[str, Product],
     known_image_hashes: list[tuple[str, Product]],
 ) -> tuple[Product | None, str | None]:
     if file_hash in known_file_hashes:
@@ -279,79 +314,17 @@ def import_product(
             "SELECT * FROM products WHERE id = ?", (product_id,)
         ).fetchone()
 
-    _compute_and_save_embedding(product_id, dest_path)
     return _row_to_product(row)
-
-
-def _compute_and_save_embedding(product_id: int, image_path: Path) -> None:
-    try:
-        from core.embedder import ClipEmbedder
-        from settings.config import load_config, resolve_config_path
-
-        config = load_config()
-        model_path = resolve_config_path(config, "clip_model_path")
-        if model_path is None or not model_path.is_file():
-            return
-        embedder = ClipEmbedder(model_path)
-        vec = embedder.embed_path(image_path)
-        save_product_embedding(product_id, ClipEmbedder.to_blob(vec))
-    except Exception:
-        return
-
-
-def save_product_embedding(product_id: int, blob: bytes) -> None:
-    with get_connection() as conn:
-        conn.execute(
-            "UPDATE products SET embedding = ? WHERE id = ?",
-            (blob, product_id),
-        )
-        conn.commit()
-
-
-def backfill_product_embeddings() -> None:
-    try:
-        from core.embedder import ClipEmbedder
-        from settings.config import load_config, resolve_config_path
-
-        config = load_config()
-        model_path = resolve_config_path(config, "clip_model_path")
-        if model_path is None or not model_path.is_file():
-            print(
-                "提示: CLIP 模型未找到，跳过 embedding 补算。"
-                "请按 README 下载模型到 data/models/。"
-            )
-            return
-        embedder = ClipEmbedder(model_path)
-    except Exception as exc:
-        print(f"提示: embedding 补算跳过 ({exc})")
-        return
-
-    with get_connection() as conn:
-        rows = conn.execute(
-            "SELECT id, image_path FROM products WHERE embedding IS NULL"
-        ).fetchall()
-        for row in rows:
-            image_path = DATA_DIR / row["image_path"]
-            if not image_path.is_file():
-                continue
-            try:
-                vec = embedder.embed_path(image_path)
-                conn.execute(
-                    "UPDATE products SET embedding = ? WHERE id = ?",
-                    (ClipEmbedder.to_blob(vec), row["id"]),
-                )
-            except Exception:
-                continue
-        conn.commit()
 
 
 def load_products_for_matching() -> list[ProductMatchRow]:
     with get_connection() as conn:
         rows = conn.execute(
             """
-            SELECT id, name, image_path, stock, image_hash, embedding
+            SELECT id, name, image_path, stock, file_hash, image_hash
             FROM products
-            WHERE image_path != '' AND embedding IS NOT NULL
+            WHERE image_path != ''
+              AND (file_hash IS NOT NULL OR image_hash IS NOT NULL)
             ORDER BY id
             """
         ).fetchall()
@@ -361,8 +334,8 @@ def load_products_for_matching() -> list[ProductMatchRow]:
             name=row["name"],
             image_path=row["image_path"],
             stock=row["stock"],
+            file_hash=row["file_hash"],
             image_hash=row["image_hash"],
-            embedding=row["embedding"],
         )
         for row in rows
     ]
@@ -461,7 +434,7 @@ def batch_import(
             continue
 
         products.append(product)
-        known_file_hashes.add(file_hash)
+        known_file_hashes[file_hash] = product
         known_image_hashes.append((image_hash, product))
 
     return products, errors, skipped

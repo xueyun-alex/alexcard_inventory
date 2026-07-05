@@ -10,9 +10,6 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = PROJECT_ROOT / "settings" / "config.json"
 
 DEFAULT_CONFIG: dict[str, Any] = {
-    "clip_threshold": 0.90,
-    "phash_top_k": 20,
-    "clip_model_path": "data/models/clip-vit-base-patch32.onnx",
     "yolo_model_path": None,
     "card_aspect_ratio_min": 0.55,
     "card_aspect_ratio_max": 0.85,
