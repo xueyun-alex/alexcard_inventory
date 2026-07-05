@@ -9,6 +9,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = PROJECT_ROOT / "data"
 DB_PATH = DATA_DIR / "inventory.db"
 PRODUCTS_DIR = DATA_DIR / "products"
+TRASH_DIR = DATA_DIR / "trash"
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS categories (
@@ -41,6 +42,18 @@ CREATE TABLE IF NOT EXISTS inventory_logs (
 CREATE INDEX IF NOT EXISTS idx_inventory_logs_product ON inventory_logs(product_id);
 """
 
+_CHANGE_LOGS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS change_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+    reverted_at TEXT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_change_logs_created ON change_logs(created_at DESC);
+"""
+
 
 def _migrate_schema(conn: sqlite3.Connection) -> None:
     columns = {
@@ -56,12 +69,20 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_products_file_hash ON products(file_hash)"
     )
     conn.executescript(_INVENTORY_LOGS_SCHEMA)
+    conn.executescript(_CHANGE_LOGS_SCHEMA)
+
+    inv_columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(inventory_logs)").fetchall()
+    }
+    if inv_columns and "reverted_at" not in inv_columns:
+        conn.execute("ALTER TABLE inventory_logs ADD COLUMN reverted_at TEXT")
 
 
 def init_db() -> None:
     """Ensure data directories exist and create tables if needed."""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     PRODUCTS_DIR.mkdir(parents=True, exist_ok=True)
+    TRASH_DIR.mkdir(parents=True, exist_ok=True)
     with get_connection() as conn:
         conn.executescript(_SCHEMA)
         _migrate_schema(conn)

@@ -11,7 +11,7 @@ from pathlib import Path
 import imagehash
 from PIL import Image
 
-from db.database import DATA_DIR, PRODUCTS_DIR, get_connection
+from db.database import DATA_DIR, PRODUCTS_DIR, TRASH_DIR, get_connection
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".gif"}
 PHASH_SIMILARITY_THRESHOLD = 5
@@ -69,6 +69,8 @@ def create_category(name: str) -> Category:
     name = name.strip()
     if not name:
         raise ValueError("产品类名称不能为空")
+    from db import changelog
+
     with get_connection() as conn:
         row = conn.execute(
             "SELECT COALESCE(MAX(sort_order), -1) + 1 AS next_order FROM categories"
@@ -78,30 +80,61 @@ def create_category(name: str) -> Category:
             "INSERT INTO categories (name, sort_order) VALUES (?, ?)",
             (name, sort_order),
         )
-        conn.commit()
         category_id = cursor.lastrowid
         row = conn.execute(
             "SELECT * FROM categories WHERE id = ?", (category_id,)
         ).fetchone()
-        return _row_to_category(row)
+        category = _row_to_category(row)
+        changelog.record_change(
+            "category_create",
+            f"新建产品类：{category.name}",
+            {
+                "category": {
+                    "id": category.id,
+                    "name": category.name,
+                    "sort_order": category.sort_order,
+                    "created_at": category.created_at,
+                }
+            },
+            conn=conn,
+        )
+        conn.commit()
+        return category
 
 
 def rename_category(category_id: int, name: str) -> Category:
     name = name.strip()
     if not name:
         raise ValueError("产品类名称不能为空")
+    from db import changelog
+
     with get_connection() as conn:
+        old_row = conn.execute(
+            "SELECT * FROM categories WHERE id = ?", (category_id,)
+        ).fetchone()
+        if old_row is None:
+            raise ValueError("产品类不存在")
+        old_name = old_row["name"]
         conn.execute(
             "UPDATE categories SET name = ? WHERE id = ?",
             (name, category_id),
         )
-        conn.commit()
         row = conn.execute(
             "SELECT * FROM categories WHERE id = ?", (category_id,)
         ).fetchone()
-        if row is None:
-            raise ValueError("产品类不存在")
-        return _row_to_category(row)
+        category = _row_to_category(row)
+        changelog.record_change(
+            "category_rename",
+            f"产品类重命名：{old_name} → {name}",
+            {
+                "category_id": category_id,
+                "old_name": old_name,
+                "new_name": name,
+            },
+            conn=conn,
+        )
+        conn.commit()
+        return category
 
 
 def count_products_in_category(category_id: int) -> int:
@@ -124,9 +157,41 @@ def count_products_by_category() -> dict[int | None, int]:
 
 def delete_category(category_id: int) -> int:
     """Delete category. Returns count of products that were in this category."""
-    count = count_products_in_category(category_id)
+    from db import changelog
+
     with get_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM categories WHERE id = ?", (category_id,)
+        ).fetchone()
+        if row is None:
+            raise ValueError("产品类不存在")
+        affected_rows = conn.execute(
+            "SELECT id FROM products WHERE category_id = ?",
+            (category_id,),
+        ).fetchall()
+        affected_product_ids = [r["id"] for r in affected_rows]
+        count = len(affected_product_ids)
+        category = _row_to_category(row)
         conn.execute("DELETE FROM categories WHERE id = ?", (category_id,))
+        summary = (
+            f"删除产品类：{category.name}（含 {count} 个产品）"
+            if count > 0
+            else f"删除产品类：{category.name}"
+        )
+        changelog.record_change(
+            "category_delete",
+            summary,
+            {
+                "category": {
+                    "id": category.id,
+                    "name": category.name,
+                    "sort_order": category.sort_order,
+                    "created_at": category.created_at,
+                },
+                "affected_product_ids": affected_product_ids,
+            },
+            conn=conn,
+        )
         conn.commit()
     return count
 
@@ -351,6 +416,33 @@ def get_product(product_id: int) -> Product | None:
     return _row_to_product(row)
 
 
+def _increment_stock_core(
+    connection: sqlite3.Connection,
+    product_id: int,
+    delta: int,
+    source: str,
+    image_path: str | None,
+) -> tuple[int, int, str]:
+    row = connection.execute(
+        "SELECT stock, name FROM products WHERE id = ?", (product_id,)
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"产品 #{product_id} 不存在")
+    stock_before = row["stock"]
+    connection.execute(
+        "UPDATE products SET stock = stock + ? WHERE id = ?",
+        (delta, product_id),
+    )
+    cursor = connection.execute(
+        """
+        INSERT INTO inventory_logs (product_id, delta, source, image_path)
+        VALUES (?, ?, ?, ?)
+        """,
+        (product_id, delta, source, image_path),
+    )
+    return int(cursor.lastrowid), stock_before, row["name"]
+
+
 def increment_stock(
     product_id: int,
     delta: int,
@@ -358,27 +450,71 @@ def increment_stock(
     image_path: str | None = None,
     *,
     conn: sqlite3.Connection | None = None,
-) -> None:
-    def _run(connection: sqlite3.Connection) -> None:
-        connection.execute(
-            "UPDATE products SET stock = stock + ? WHERE id = ?",
-            (delta, product_id),
+    record: bool = True,
+) -> int:
+    """Adjust stock and optionally record a single change log. Returns inventory_log_id."""
+    from db import changelog
+
+    def _run(connection: sqlite3.Connection) -> int:
+        inventory_log_id, stock_before, product_name = _increment_stock_core(
+            connection, product_id, delta, source, image_path
         )
-        connection.execute(
-            """
-            INSERT INTO inventory_logs (product_id, delta, source, image_path)
-            VALUES (?, ?, ?, ?)
-            """,
-            (product_id, delta, source, image_path),
-        )
+        if record:
+            source_label = {"manual": "手动", "inbound": "入库"}.get(source, source)
+            sign = f"+{delta}" if delta > 0 else str(delta)
+            summary = f"「{product_name}」库存 {sign}（{source_label}）"
+            changelog.record_change(
+                "stock",
+                summary,
+                {
+                    "product_id": product_id,
+                    "delta": delta,
+                    "source": source,
+                    "inventory_log_id": inventory_log_id,
+                    "stock_before": stock_before,
+                },
+                conn=connection,
+            )
+        return inventory_log_id
 
     if conn is not None:
-        _run(conn)
-        return
+        return _run(conn)
 
     with get_connection() as connection:
-        _run(connection)
+        inventory_log_id = _run(connection)
         connection.commit()
+        return inventory_log_id
+
+
+def adjust_stock_batch(product_ids: list[int], delta: int) -> None:
+    """Apply the same stock delta to multiple products as one logged operation."""
+    if delta == 0 or not product_ids:
+        return
+    from db import changelog
+
+    with get_connection() as conn:
+        entries: list[dict] = []
+        for product_id in product_ids:
+            inventory_log_id, stock_before, _product_name = _increment_stock_core(
+                conn, product_id, delta, "manual", None
+            )
+            entries.append(
+                {
+                    "product_id": product_id,
+                    "delta": delta,
+                    "source": "manual",
+                    "inventory_log_id": inventory_log_id,
+                    "stock_before": stock_before,
+                }
+            )
+        summary = changelog.format_stock_batch_summary(conn, entries, "manual")
+        changelog.record_change(
+            "stock_batch",
+            summary,
+            {"source": "manual", "entries": entries},
+            conn=conn,
+        )
+        conn.commit()
 
 
 def apply_inbound_batch(
@@ -387,15 +523,31 @@ def apply_inbound_batch(
     """Apply multiple inbound increments in one transaction."""
     if not items:
         return 0
+    from db import changelog
+
     with get_connection() as conn:
+        entries: list[dict] = []
         for product_id, image_path in items:
-            increment_stock(
-                product_id,
-                delta=1,
-                source="inbound",
-                image_path=image_path,
-                conn=conn,
+            inventory_log_id, stock_before, _product_name = _increment_stock_core(
+                conn, product_id, 1, "inbound", image_path
             )
+            entries.append(
+                {
+                    "product_id": product_id,
+                    "delta": 1,
+                    "source": "inbound",
+                    "inventory_log_id": inventory_log_id,
+                    "stock_before": stock_before,
+                    "image_path": image_path,
+                }
+            )
+        summary = changelog.format_stock_batch_summary(conn, entries, "inbound")
+        changelog.record_change(
+            "stock_batch",
+            summary,
+            {"source": "inbound", "entries": entries},
+            conn=conn,
+        )
         conn.commit()
     return len(items)
 
@@ -461,11 +613,34 @@ def list_products(category_id: int | None = None) -> list[Product]:
 def move_products(product_ids: list[int], category_id: int | None) -> None:
     if not product_ids:
         return
+    from db import changelog
+
     placeholders = ",".join("?" * len(product_ids))
     with get_connection() as conn:
+        rows = conn.execute(
+            f"SELECT id, category_id FROM products WHERE id IN ({placeholders})",
+            product_ids,
+        ).fetchall()
+        moves = [
+            {
+                "product_id": row["id"],
+                "old_category_id": row["category_id"],
+                "new_category_id": category_id,
+            }
+            for row in rows
+        ]
+        if not moves:
+            return
         conn.execute(
             f"UPDATE products SET category_id = ? WHERE id IN ({placeholders})",
             [category_id, *product_ids],
+        )
+        summary = changelog.format_category_move_summary(conn, moves)
+        changelog.record_change(
+            "category_move",
+            summary,
+            {"moves": moves},
+            conn=conn,
         )
         conn.commit()
 
@@ -474,31 +649,89 @@ def rename_product(product_id: int, name: str) -> Product:
     name = name.strip()
     if not name:
         raise ValueError("产品名称不能为空")
+    from db import changelog
+
     with get_connection() as conn:
+        old_row = conn.execute(
+            "SELECT * FROM products WHERE id = ?", (product_id,)
+        ).fetchone()
+        if old_row is None:
+            raise ValueError("产品不存在")
+        old_name = old_row["name"]
         conn.execute(
             "UPDATE products SET name = ? WHERE id = ?",
             (name, product_id),
         )
+        row = conn.execute(
+            "SELECT * FROM products WHERE id = ?", (product_id,)
+        ).fetchone()
+        product = _row_to_product(row)
+        changelog.record_change(
+            "product_rename",
+            f"产品重命名：{old_name} → {name}",
+            {
+                "product_id": product_id,
+                "old_name": old_name,
+                "new_name": name,
+            },
+            conn=conn,
+        )
         conn.commit()
+        return product
+
+
+def delete_product(product_id: int) -> None:
+    import json
+
+    from db import changelog
+
+    product_dir = PRODUCTS_DIR / str(product_id)
+    with get_connection() as conn:
         row = conn.execute(
             "SELECT * FROM products WHERE id = ?", (product_id,)
         ).fetchone()
         if row is None:
             raise ValueError("产品不存在")
-        return _row_to_product(row)
 
-
-def delete_product(product_id: int) -> None:
-    with get_connection() as conn:
-        row = conn.execute(
-            "SELECT image_path FROM products WHERE id = ?", (product_id,)
-        ).fetchone()
-        if row is None:
-            raise ValueError("产品不存在")
+        product_data = {
+            "id": row["id"],
+            "category_id": row["category_id"],
+            "name": row["name"],
+            "image_path": row["image_path"],
+            "stock": row["stock"],
+            "created_at": row["created_at"],
+            "file_hash": row["file_hash"],
+            "image_hash": row["image_hash"],
+        }
+        log_id = changelog.record_change(
+            "product_delete",
+            f"删除产品：{row['name']}",
+            {"product": product_data, "trash_dir": ""},
+            conn=conn,
+        )
+        trash_dir = TRASH_DIR / str(log_id) / str(product_id)
+        trash_dir.mkdir(parents=True, exist_ok=True)
+        if product_dir.exists():
+            for item in product_dir.iterdir():
+                if item.is_file():
+                    shutil.copy2(item, trash_dir / item.name)
+        trash_rel = trash_dir.relative_to(DATA_DIR).as_posix()
+        conn.execute(
+            "UPDATE change_logs SET payload_json = ? WHERE id = ?",
+            (
+                json.dumps(
+                    {"product": product_data, "trash_dir": trash_rel},
+                    ensure_ascii=False,
+                ),
+                log_id,
+            ),
+        )
+        conn.execute(
+            "DELETE FROM inventory_logs WHERE product_id = ?", (product_id,)
+        )
         conn.execute("DELETE FROM products WHERE id = ?", (product_id,))
         conn.commit()
 
-    product_dir = PRODUCTS_DIR / str(product_id)
     if product_dir.exists():
         shutil.rmtree(product_dir)
 

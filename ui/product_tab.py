@@ -241,6 +241,8 @@ class CategorySelectDialog(QDialog):
 
 
 class ProductTab(QWidget):
+    data_changed = Signal()
+
     def __init__(self) -> None:
         super().__init__()
         self._current_filter: str | int = FILTER_ALL
@@ -506,6 +508,7 @@ class ProductTab(QWidget):
         try:
             models.create_category(name)
             self.refresh_categories()
+            self.data_changed.emit()
         except Exception as exc:
             QMessageBox.warning(self, "错误", str(exc))
 
@@ -540,6 +543,7 @@ class ProductTab(QWidget):
         try:
             models.rename_category(category_id, name)
             self.refresh_categories()
+            self.data_changed.emit()
         except Exception as exc:
             QMessageBox.warning(self, "错误", str(exc))
 
@@ -571,6 +575,7 @@ class ProductTab(QWidget):
             models.delete_category(category_id)
             self.refresh_categories()
             self.refresh_products()
+            self.data_changed.emit()
         except Exception as exc:
             QMessageBox.warning(self, "错误", str(exc))
 
@@ -655,6 +660,7 @@ class ProductTab(QWidget):
             models.move_products(product_ids, category_id)
             self.refresh_categories()
             self.refresh_products()
+            self.data_changed.emit()
             event.acceptProposedAction()
         except Exception as exc:
             QMessageBox.warning(self, "错误", str(exc))
@@ -687,6 +693,7 @@ class ProductTab(QWidget):
             models.move_products(product_ids, dialog.selected_category_id)
             self.refresh_categories()
             self.refresh_products()
+            self.data_changed.emit()
         except Exception as exc:
             QMessageBox.warning(self, "错误", str(exc))
 
@@ -704,16 +711,25 @@ class ProductTab(QWidget):
             return
 
         try:
-            for product_id in product_ids:
-                models.increment_stock(product_id, delta, "manual")
-                updated = models.get_product(product_id)
-                if updated is None:
-                    continue
-                card = self._cards.get(product_id)
-                if card is not None:
-                    card.update_stock(updated.stock)
+            if len(product_ids) == 1:
+                models.increment_stock(product_ids[0], delta, "manual")
+                updated = models.get_product(product_ids[0])
+                if updated is not None:
+                    card = self._cards.get(product_ids[0])
+                    if card is not None:
+                        card.update_stock(updated.stock)
+            else:
+                models.adjust_stock_batch(product_ids, delta)
+                for product_id in product_ids:
+                    updated = models.get_product(product_id)
+                    if updated is None:
+                        continue
+                    card = self._cards.get(product_id)
+                    if card is not None:
+                        card.update_stock(updated.stock)
             if self._stock_sort != SORT_DEFAULT:
                 self._relayout_grid()
+            self.data_changed.emit()
         except Exception as exc:
             QMessageBox.warning(self, "错误", str(exc))
 
@@ -726,6 +742,7 @@ class ProductTab(QWidget):
         try:
             models.rename_product(product.id, name)
             self.refresh_products()
+            self.data_changed.emit()
         except Exception as exc:
             QMessageBox.warning(self, "错误", str(exc))
 
@@ -752,5 +769,6 @@ class ProductTab(QWidget):
                 models.delete_product(pid)
             self.refresh_categories()
             self.refresh_products()
+            self.data_changed.emit()
         except Exception as exc:
             QMessageBox.warning(self, "错误", str(exc))
