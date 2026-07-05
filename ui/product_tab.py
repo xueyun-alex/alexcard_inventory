@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QGridLayout,
     QHBoxLayout,
+    QHeaderView,
     QInputDialog,
     QLabel,
     QListWidget,
@@ -28,18 +29,23 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSpinBox,
+    QSizePolicy,
     QSplitter,
+    QTableWidget,
+    QTableWidgetItem,
     QToolBar,
     QVBoxLayout,
     QWidget,
 )
 
 from db import models
-from db.models import Category, Product
+from db.models import Category, ImportDuplicate, Product
 from ui.thumbnails import ThumbnailLoader, ThumbnailSignals
 
 THUMB_SIZE = 120
 GRID_COLUMNS = 6
+DIALOG_THUMB_SIZE = 80
+DIALOG_MAX_VISIBLE_ROWS = 8
 
 FILTER_ALL = "all"
 FILTER_UNCATEGORIZED = "uncategorized"
@@ -87,6 +93,129 @@ class StockAdjustDialog(QDialog):
     @property
     def delta(self) -> int:
         return self.value_spin.value()
+
+
+class DuplicateProductsDialog(QDialog):
+    def __init__(
+        self,
+        duplicates: list[ImportDuplicate],
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("重复产品")
+        self.resize(760, 420)
+        self._load_generation = [0]
+        self._thread_pool = QThreadPool.globalInstance()
+        self._thumb_signals = ThumbnailSignals()
+        self._thumb_signals.loaded.connect(self._on_thumbnail_loaded)
+        self._thumb_labels: dict[str, QLabel] = {}
+
+        categories = {c.id: c.name for c in models.list_categories()}
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel(f"跳过 {len(duplicates)} 个重复产品："))
+
+        self.table = QTableWidget(len(duplicates), 5)
+        self.table.setHorizontalHeaderLabels(
+            ["新图", "已有产品", "名称", "库存", "产品类"]
+        )
+        self.table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Stretch
+        )
+        for col in (0, 1):
+            self.table.horizontalHeader().setSectionResizeMode(
+                col, QHeaderView.ResizeMode.ResizeToContents
+            )
+        self.table.verticalHeader().setVisible(False)
+        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+
+        for row_idx, duplicate in enumerate(duplicates):
+            self._populate_row(row_idx, duplicate, categories)
+
+        row_height = DIALOG_THUMB_SIZE + 12
+        self.table.verticalHeader().setDefaultSectionSize(row_height)
+        header_height = max(self.table.horizontalHeader().height(), 30)
+        visible_rows = min(len(duplicates), DIALOG_MAX_VISIBLE_ROWS)
+        table_height = header_height + row_height * visible_rows + 2
+        self.table.setMinimumHeight(table_height)
+        self.table.setMaximumHeight(table_height)
+        self.table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.table.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Expanding,
+        )
+
+        layout.addWidget(self.table, stretch=1)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("确定")
+        buttons.accepted.connect(self.accept)
+        layout.addWidget(buttons)
+
+    def _populate_row(
+        self,
+        row_idx: int,
+        duplicate: ImportDuplicate,
+        categories: dict[int, str],
+    ) -> None:
+        self.table.setRowHeight(row_idx, DIALOG_THUMB_SIZE + 12)
+
+        source_label = QLabel()
+        source_label.setFixedSize(DIALOG_THUMB_SIZE, DIALOG_THUMB_SIZE)
+        source_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        source_label.setStyleSheet("background-color: #e0e0e0; border: 1px solid #ccc;")
+        self.table.setCellWidget(row_idx, 0, source_label)
+        source_key = f"source:{row_idx}"
+        self._thumb_labels[source_key] = source_label
+        self._load_thumbnail(source_key, duplicate.source_path)
+
+        product = duplicate.existing_product
+        product_label = QLabel()
+        product_label.setFixedSize(DIALOG_THUMB_SIZE, DIALOG_THUMB_SIZE)
+        product_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        product_label.setStyleSheet("background-color: #e0e0e0; border: 1px solid #ccc;")
+        self.table.setCellWidget(row_idx, 1, product_label)
+        product_key = f"product:{row_idx}"
+        self._thumb_labels[product_key] = product_label
+        self._load_thumbnail(product_key, models.get_product_image_path(product))
+
+        self.table.setItem(row_idx, 2, QTableWidgetItem(product.name))
+        self.table.setItem(row_idx, 3, QTableWidgetItem(str(product.stock)))
+
+        if product.category_id is None:
+            category_name = "未归类"
+        else:
+            category_name = categories.get(product.category_id, "—")
+        self.table.setItem(row_idx, 4, QTableWidgetItem(category_name))
+
+    def _load_thumbnail(self, key: str, path: Path) -> None:
+        loader = ThumbnailLoader(
+            key,
+            path,
+            DIALOG_THUMB_SIZE,
+            self._thumb_signals,
+            self._load_generation[0],
+            self._load_generation,
+        )
+        self._thread_pool.start(loader)
+
+    @Slot(str, QPixmap)
+    def _on_thumbnail_loaded(self, key: str, pixmap: QPixmap) -> None:
+        label = self._thumb_labels.get(key)
+        if label is None:
+            return
+        scaled = pixmap.scaled(
+            DIALOG_THUMB_SIZE,
+            DIALOG_THUMB_SIZE,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        label.setPixmap(scaled)
+
+    def closeEvent(self, event) -> None:
+        self._load_generation[0] += 1
+        super().closeEvent(event)
 
 
 class ProductCard(QWidget):
@@ -267,7 +396,7 @@ class ProductTab(QWidget):
 
         toolbar = QToolBar()
         btn_new_category = QPushButton("新建产品类")
-        btn_import = QPushButton("导入图片")
+        btn_import = QPushButton("新增产品")
         btn_move = QPushButton("移动到产品类")
         btn_refresh = QPushButton("刷新")
         btn_new_category.clicked.connect(self.create_category_dialog)
@@ -600,8 +729,8 @@ class ProductTab(QWidget):
         from PySide6.QtWidgets import QFileDialog
 
         msg = QMessageBox(self)
-        msg.setWindowTitle("导入图片")
-        msg.setText("选择导入方式")
+        msg.setWindowTitle("新增产品")
+        msg.setText("选择新增方式")
         files_btn = msg.addButton("选择文件", QMessageBox.ButtonRole.AcceptRole)
         folder_btn = msg.addButton("选择文件夹", QMessageBox.ButtonRole.AcceptRole)
         msg.addButton("取消", QMessageBox.ButtonRole.RejectRole)
@@ -629,22 +758,23 @@ class ProductTab(QWidget):
             return
 
         try:
-            products, errors, skipped = models.batch_import(paths)
+            products, errors, duplicates = models.batch_import(paths)
             self.refresh_categories()
             self.refresh_products()
-            message = f"成功导入 {len(products)} 张图片。"
-            if skipped:
-                message += f"\n跳过 {len(skipped)} 张重复图片。"
-                message += "\n" + "\n".join(skipped[:10])
-                if len(skipped) > 10:
-                    message += f"\n... 共 {len(skipped)} 张跳过"
+
+            if duplicates:
+                DuplicateProductsDialog(duplicates, parent=self).exec()
+
+            message_parts: list[str] = []
+            if products:
+                message_parts.append(f"成功新增 {len(products)} 个产品。")
             if errors:
-                message += "\n\n以下文件导入失败:\n" + "\n".join(errors[:10])
-                if len(errors) > 10:
-                    message += f"\n... 共 {len(errors)} 个错误"
-            QMessageBox.information(self, "导入完成", message)
+                error_text = "以下文件新增失败:\n" + "\n".join(errors)
+                message_parts.append(error_text)
+            if message_parts:
+                QMessageBox.information(self, "新增完成", "\n\n".join(message_parts))
         except Exception as exc:
-            QMessageBox.critical(self, "导入失败", str(exc))
+            QMessageBox.critical(self, "新增失败", str(exc))
 
     def _category_drag_enter(self, event) -> None:
         if event.mimeData().hasText():

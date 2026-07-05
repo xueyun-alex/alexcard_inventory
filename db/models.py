@@ -45,6 +45,14 @@ class ProductMatchRow:
     image_hash: str | None
 
 
+@dataclass
+class ImportDuplicate:
+    source_path: Path
+    source_name: str
+    existing_product: Product
+    reason: str
+
+
 def _row_to_category(row: sqlite3.Row) -> Category:
     return Category(
         id=row["id"],
@@ -333,11 +341,11 @@ def _find_duplicate_by_hashes(
     known_image_hashes: list[tuple[str, Product]],
 ) -> tuple[Product | None, str | None]:
     if file_hash in known_file_hashes:
-        return None, "内容重复"
+        return known_file_hashes[file_hash], "内容重复"
 
     for existing_hash, product in known_image_hashes:
         if is_visually_similar(image_hash, existing_hash):
-            return product, f"图片相似（与「{product.name}」）"
+            return product, "图片相似"
 
     return None, None
 
@@ -554,11 +562,11 @@ def apply_inbound_batch(
 
 def batch_import(
     paths: list[Path],
-) -> tuple[list[Product], list[str], list[str]]:
-    """Import multiple images. Returns (products, errors, skipped messages)."""
+) -> tuple[list[Product], list[str], list[ImportDuplicate]]:
+    """Import multiple images. Returns (products, errors, duplicates)."""
     products: list[Product] = []
     errors: list[str] = []
-    skipped: list[str] = []
+    duplicates: list[ImportDuplicate] = []
     known_file_hashes, known_image_hashes = load_product_hashes()
 
     for path in collect_image_paths(paths):
@@ -569,14 +577,24 @@ def batch_import(
             errors.append(f"{path.name}: {exc}")
             continue
 
-        _existing_product, reason = _find_duplicate_by_hashes(
+        existing_product, reason = _find_duplicate_by_hashes(
             file_hash,
             image_hash,
             known_file_hashes,
             known_image_hashes,
         )
         if reason:
-            skipped.append(f"{path.name}: {reason}")
+            if existing_product is None:
+                errors.append(f"{path.name}: {reason}")
+            else:
+                duplicates.append(
+                    ImportDuplicate(
+                        source_path=path,
+                        source_name=path.name,
+                        existing_product=existing_product,
+                        reason=reason,
+                    )
+                )
             continue
 
         try:
@@ -589,7 +607,7 @@ def batch_import(
         known_file_hashes[file_hash] = product
         known_image_hashes.append((image_hash, product))
 
-    return products, errors, skipped
+    return products, errors, duplicates
 
 
 def list_products(category_id: int | None = None) -> list[Product]:
