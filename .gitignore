@@ -7,3 +7,4 @@ venv/
 .pytest_cache/
 .idea/
 .vscode/
+settings/coze.json
