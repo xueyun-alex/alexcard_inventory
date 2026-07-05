@@ -28,7 +28,12 @@ from core.matcher import ProductMatcher
 from core.types import RecognitionResult
 from db import models
 from db.database import DATA_DIR
-from db.models import compute_file_hash, compute_image_hash, compute_image_hash_pil
+from db.models import (
+    backfill_product_hashes,
+    compute_file_hash,
+    compute_image_hash,
+    compute_image_hash_pil,
+)
 from settings.config import load_config
 from ui.match_dialog import MatchConfirmDialog
 
@@ -63,11 +68,9 @@ class RecognitionWorker(QThread):
     def run(self) -> None:
         try:
             config = load_config()
+            backfill_product_hashes()
             matcher = ProductMatcher()
             matcher.build_index()
-
-            if matcher.product_count == 0:
-                raise RuntimeError("产品库为空或尚无 hash，请先导入产品。")
 
             TEMP_INBOUND_DIR.mkdir(parents=True, exist_ok=True)
 
