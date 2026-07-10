@@ -36,17 +36,15 @@ class Product:
 
 
 @dataclass
-class ProductMatchRow:
-    id: int
-    name: str
-    image_path: str
-    stock: int
-    file_hash: str | None
-    image_hash: str | None
+class ImportDuplicate:
+    source_path: Path
+    source_name: str
+    existing_product: Product
+    reason: str
 
 
 @dataclass
-class ImportDuplicate:
+class InboundMatch:
     source_path: Path
     source_name: str
     existing_product: Product
@@ -270,33 +268,6 @@ def is_visually_similar(
     return phash_hamming_distance(hash1, hash2) <= threshold
 
 
-def find_product_by_hashes(
-    file_hash: str | None,
-    image_hash: str,
-    known_file_hashes: dict[str, Product],
-    known_image_hashes: list[tuple[str, Product]],
-) -> tuple[Product | None, str | None, float | None]:
-    """Return (product, reason, score). SHA match score=1.0; pHash score=1-dist/64."""
-    if file_hash is not None:
-        product = known_file_hashes.get(file_hash)
-        if product is not None:
-            return product, "内容一致", 1.0
-
-    best_product: Product | None = None
-    best_distance = PHASH_SIMILARITY_THRESHOLD + 1
-    for existing_hash, candidate in known_image_hashes:
-        distance = phash_hamming_distance(image_hash, existing_hash)
-        if distance <= PHASH_SIMILARITY_THRESHOLD and distance < best_distance:
-            best_distance = distance
-            best_product = candidate
-
-    if best_product is not None:
-        score = 1.0 - best_distance / 64.0
-        return best_product, "视觉相似", score
-
-    return None, None, None
-
-
 def load_product_hashes() -> tuple[dict[str, Product], list[tuple[str, Product]]]:
     file_hashes: dict[str, Product] = {}
     image_hashes: list[tuple[str, Product]] = []
@@ -401,30 +372,6 @@ def import_product(
         ).fetchone()
 
     return _row_to_product(row)
-
-
-def load_products_for_matching() -> list[ProductMatchRow]:
-    with get_connection() as conn:
-        rows = conn.execute(
-            """
-            SELECT id, name, image_path, stock, file_hash, image_hash
-            FROM products
-            WHERE image_path != ''
-              AND (file_hash IS NOT NULL OR image_hash IS NOT NULL)
-            ORDER BY id
-            """
-        ).fetchall()
-    return [
-        ProductMatchRow(
-            id=row["id"],
-            name=row["name"],
-            image_path=row["image_path"],
-            stock=row["stock"],
-            file_hash=row["file_hash"],
-            image_hash=row["image_hash"],
-        )
-        for row in rows
-    ]
 
 
 def get_product(product_id: int) -> Product | None:
@@ -571,6 +518,43 @@ def apply_inbound_batch(
         )
         conn.commit()
     return len(items)
+
+
+def match_inbound_images(
+    paths: list[Path],
+) -> tuple[list[InboundMatch], list[str]]:
+    """Match images against existing products using the same logic as import dedup."""
+    matches: list[InboundMatch] = []
+    unmatched: list[str] = []
+    known_file_hashes, known_image_hashes = load_product_hashes()
+
+    for path in collect_image_paths(paths):
+        try:
+            file_hash = compute_file_hash(path)
+            image_hash = compute_image_hash(path)
+        except Exception:
+            unmatched.append(path.name)
+            continue
+
+        existing_product, reason = _find_duplicate_by_hashes(
+            file_hash,
+            image_hash,
+            known_file_hashes,
+            known_image_hashes,
+        )
+        if existing_product is not None and reason is not None:
+            matches.append(
+                InboundMatch(
+                    source_path=path,
+                    source_name=path.name,
+                    existing_product=existing_product,
+                    reason=reason,
+                )
+            )
+        else:
+            unmatched.append(path.name)
+
+    return matches, unmatched
 
 
 def batch_import(

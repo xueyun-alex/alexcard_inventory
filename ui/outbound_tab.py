@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 
 import cv2
@@ -22,19 +23,96 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from core.clip_matcher import ClipProductMatcher
 from core.detector import detect_cards
-from core.inventory import apply_outbound
-from core.types import RecognitionResult
 from db import models
 from db.database import DATA_DIR
-from db.models import backfill_product_embeddings
 from settings.config import load_config
-from ui.file_drop import FileDropListWidget, enable_file_drop
-from ui.inbound_tab import DetectionPreview, _write_image
-from ui.match_dialog import MatchConfirmDialog
+from ui.file_drop import FileDropLabel, FileDropListWidget, enable_file_drop
 
 TEMP_OUTBOUND_DIR = DATA_DIR / "temp" / "outbound"
+
+
+@dataclass
+class RecognitionResult:
+    crop_path: Path
+    source_path: Path
+    bbox: tuple[int, int, int, int]
+    product_id: int | None
+    product_name: str | None
+    score: float | None
+    stock: int | None
+    matched: bool
+
+
+def _read_image(path: Path):
+    import numpy as np
+
+    data = np.fromfile(str(path), dtype=np.uint8)
+    if data.size == 0:
+        return None
+    return cv2.imdecode(data, cv2.IMREAD_COLOR)
+
+
+def _write_image(path: Path, image) -> None:
+    success, encoded = cv2.imencode(".png", image)
+    if not success:
+        raise ValueError(f"无法保存图片: {path.name}")
+    encoded.tofile(str(path))
+
+
+class DetectionPreview(FileDropLabel):
+    """Shows source image with detection bounding boxes."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setMinimumHeight(240)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setStyleSheet(
+            "background-color: #f5f5f5; border: 1px solid #ccc; color: #666;"
+        )
+        self.setText("选择上方图片查看检测框预览")
+        self._current_path: Path | None = None
+        self._bboxes: list[tuple[int, int, int, int]] = []
+
+    def set_detection(
+        self,
+        source_path: Path | None,
+        bboxes: list[tuple[int, int, int, int]],
+    ) -> None:
+        self._current_path = source_path
+        self._bboxes = bboxes
+        if source_path is None or not source_path.is_file():
+            self.clear()
+            self.setText("选择上方图片查看检测框预览")
+            return
+
+        image = _read_image(source_path)
+        if image is None:
+            self.setText("无法加载预览图")
+            return
+
+        for x, y, w, h in bboxes:
+            cv2.rectangle(image, (x, y), (x + w, y + h), (0, 120, 255), 3)
+
+        rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        h, w, ch = rgb.shape
+        qimage = QImage(rgb.data, w, h, ch * w, QImage.Format.Format_RGB888)
+        pixmap = QPixmap.fromImage(qimage.copy())
+        max_w = max(self.width() - 20, 400)
+        max_h = max(self.height() - 20, 220)
+        scaled = pixmap.scaled(
+            max_w,
+            max_h,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        self.setPixmap(scaled)
+        self.setText("")
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if self._current_path is not None:
+            self.set_detection(self._current_path, self._bboxes)
 
 
 class OutboundRecognitionWorker(QThread):
