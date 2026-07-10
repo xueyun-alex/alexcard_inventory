@@ -36,7 +36,7 @@ class InboundWorker(QThread):
 
     def run(self) -> None:
         try:
-            paths = models.collect_image_paths(self._image_paths)
+            paths = list(self._image_paths)
             total = len(paths)
             if total == 0:
                 self.finished.emit([], [])
@@ -103,10 +103,7 @@ class InboundTab(QWidget):
             self._add_paths([Path(f) for f in files])
 
     def _add_paths(self, paths: list[Path]) -> None:
-        for path in models.collect_image_paths(paths):
-            resolved = path.resolve()
-            if resolved in {p.resolve() for p in self._paths}:
-                continue
+        for path in models.expand_inbound_paths(paths):
             self._paths.append(path)
             item = QListWidgetItem(path.name)
             item.setData(Qt.ItemDataRole.UserRole, str(path))
@@ -149,11 +146,14 @@ class InboundTab(QWidget):
         unmatched: list[str],
     ) -> None:
         self.progress_bar.setValue(100)
+        groups = models.aggregate_inbound_matches(matches)
+        total_images = sum(group.quantity for group in groups)
         self.status_label.setText(
-            f"识别完成，匹配 {len(matches)} 项，未匹配 {len(unmatched)} 项"
+            f"识别完成，匹配 {len(groups)} 组（共 {total_images} 张），"
+            f"未匹配 {len(unmatched)} 项"
         )
 
-        if not matches:
+        if not groups:
             message = "未识别到库中已有产品。"
             if unmatched:
                 preview = ", ".join(unmatched[:10])
@@ -171,7 +171,7 @@ class InboundTab(QWidget):
                 f"{len(unmatched)} 张图片未匹配到库中产品，已跳过：\n{preview}{suffix}",
             )
 
-        dialog = InboundConfirmDialog(matches, self)
+        dialog = InboundConfirmDialog(groups, self)
         if dialog.exec() != InboundConfirmDialog.DialogCode.Accepted:
             return
 

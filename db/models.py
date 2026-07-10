@@ -49,6 +49,17 @@ class InboundMatch:
     source_name: str
     existing_product: Product
     reason: str
+    file_hash: str
+
+
+@dataclass
+class InboundMatchGroup:
+    source_path: Path
+    source_name: str
+    existing_product: Product
+    reason: str
+    quantity: int
+    source_paths: list[Path]
 
 
 def _row_to_category(row: sqlite3.Row) -> Category:
@@ -232,6 +243,20 @@ def collect_image_paths(paths: list[Path]) -> list[Path]:
             if resolved not in seen:
                 seen.add(resolved)
                 result.append(path)
+    return result
+
+
+def expand_inbound_paths(paths: list[Path]) -> list[Path]:
+    """Expand folders to image files, preserving duplicate user entries."""
+    result: list[Path] = []
+    for path in paths:
+        path = Path(path)
+        if path.is_dir():
+            for child in sorted(path.rglob("*")):
+                if is_image_file(child):
+                    result.append(child)
+        elif is_image_file(path):
+            result.append(path)
     return result
 
 
@@ -528,7 +553,7 @@ def match_inbound_images(
     unmatched: list[str] = []
     known_file_hashes, known_image_hashes = load_product_hashes()
 
-    for path in collect_image_paths(paths):
+    for path in expand_inbound_paths(paths):
         try:
             file_hash = compute_file_hash(path)
             image_hash = compute_image_hash(path)
@@ -549,12 +574,38 @@ def match_inbound_images(
                     source_name=path.name,
                     existing_product=existing_product,
                     reason=reason,
+                    file_hash=file_hash,
                 )
             )
         else:
             unmatched.append(path.name)
 
     return matches, unmatched
+
+
+def aggregate_inbound_matches(
+    matches: list[InboundMatch],
+) -> list[InboundMatchGroup]:
+    """Merge matches by product and file content hash."""
+    groups: dict[tuple[int, str], InboundMatchGroup] = {}
+    order: list[tuple[int, str]] = []
+    for match in matches:
+        key = (match.existing_product.id, match.file_hash)
+        if key not in groups:
+            groups[key] = InboundMatchGroup(
+                source_path=match.source_path,
+                source_name=match.source_name,
+                existing_product=match.existing_product,
+                reason=match.reason,
+                quantity=1,
+                source_paths=[match.source_path],
+            )
+            order.append(key)
+            continue
+        group = groups[key]
+        group.quantity += 1
+        group.source_paths.append(match.source_path)
+    return [groups[key] for key in order]
 
 
 def batch_import(
