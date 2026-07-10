@@ -40,6 +40,7 @@ from PySide6.QtWidgets import (
 
 from db import models
 from db.models import Category, ImportDuplicate, Product
+from ui.file_drop import enable_file_drop
 from ui.thumbnails import ThumbnailLoader, ThumbnailSignals
 
 THUMB_SIZE = 120
@@ -453,6 +454,10 @@ class ProductTab(QWidget):
         splitter.setStretchFactor(1, 1)
         layout.addWidget(splitter)
 
+        enable_file_drop(self.right_panel, self._import_dropped_paths)
+        enable_file_drop(self.scroll_area, self._import_dropped_paths)
+        enable_file_drop(self.grid_container, self._import_dropped_paths)
+
     def refresh_categories(self) -> None:
         current_data = None
         item = self.category_list.currentItem()
@@ -725,6 +730,14 @@ class ProductTab(QWidget):
         except Exception as exc:
             QMessageBox.warning(self, "错误", str(exc))
 
+    def _import_dropped_paths(self, paths: list[Path]) -> None:
+        if not paths:
+            return
+        self._import_paths(paths)
+
+    def handle_file_drop(self, paths: list[Path]) -> None:
+        self._import_dropped_paths(paths)
+
     def import_images_dialog(self) -> None:
         from PySide6.QtWidgets import QFileDialog
 
@@ -757,6 +770,9 @@ class ProductTab(QWidget):
         if not paths:
             return
 
+        self._import_paths(paths)
+
+    def _import_paths(self, paths: list[Path]) -> None:
         try:
             products, errors, duplicates = models.batch_import(paths)
             self.refresh_categories()

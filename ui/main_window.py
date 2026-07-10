@@ -1,10 +1,47 @@
 """Main application window."""
 
+from __future__ import annotations
+
+from pathlib import Path
+
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import QMainWindow, QTabWidget
 
+from ui.file_drop import accept_file_drag, paths_from_event
 from ui.history_tab import HistoryTab
 from ui.inbound_tab import InboundTab
 from ui.product_tab import ProductTab
+
+
+class DroppableTabWidget(QTabWidget):
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:  # noqa: N802
+        if accept_file_drag(event):
+            return
+        super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event: QDragEnterEvent) -> None:  # noqa: N802
+        if accept_file_drag(event):
+            return
+        super().dragMoveEvent(event)
+
+    def dropEvent(self, event: QDropEvent) -> None:  # noqa: N802
+        paths = paths_from_event(event)
+        if paths and self._forward_file_drop(paths):
+            event.setDropAction(Qt.DropAction.CopyAction)
+            event.accept()
+            return
+        super().dropEvent(event)
+
+    def _forward_file_drop(self, paths: list[Path]) -> bool:
+        current = self.currentWidget()
+        if current is None:
+            return False
+        handler = getattr(current, "handle_file_drop", None)
+        if callable(handler):
+            handler(paths)
+            return True
+        return False
 
 
 class MainWindow(QMainWindow):
@@ -12,8 +49,10 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("卡牌库存管理")
         self.resize(1200, 800)
+        self.setAcceptDrops(True)
 
-        tabs = QTabWidget()
+        tabs = DroppableTabWidget()
+        tabs.setAcceptDrops(True)
         product_tab = ProductTab()
         inbound_tab = InboundTab()
         history_tab = HistoryTab()
@@ -32,4 +71,23 @@ class MainWindow(QMainWindow):
         clear_tab.setEnabled(False)
         tabs.addTab(clear_tab, "清库存")
 
+        self._tabs = tabs
         self.setCentralWidget(tabs)
+
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:  # noqa: N802
+        if accept_file_drag(event):
+            return
+        super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event: QDragEnterEvent) -> None:  # noqa: N802
+        if accept_file_drag(event):
+            return
+        super().dragMoveEvent(event)
+
+    def dropEvent(self, event: QDropEvent) -> None:  # noqa: N802
+        paths = paths_from_event(event)
+        if paths and self._tabs._forward_file_drop(paths):
+            event.setDropAction(Qt.DropAction.CopyAction)
+            event.accept()
+            return
+        super().dropEvent(event)

@@ -30,7 +30,7 @@ from db import models
 from db.database import DATA_DIR
 from db.models import backfill_product_embeddings
 from settings.config import load_config
-from ui.file_drop import enable_file_drop
+from ui.file_drop import FileDropListWidget, enable_file_drop
 from ui.inbound_tab import DetectionPreview, _write_image
 from ui.match_dialog import MatchConfirmDialog
 
@@ -127,11 +127,9 @@ class OutboundTab(QWidget):
         toolbar.addWidget(btn_start)
         layout.addLayout(toolbar)
 
-        self.file_list = QListWidget()
-        self.file_list.setAcceptDrops(True)
-        self.file_list.setDragEnabled(False)
+        self.file_list = FileDropListWidget()
+        self.file_list.set_file_drop_callback(self._add_paths)
         self.file_list.itemSelectionChanged.connect(self._on_selection_changed)
-        enable_file_drop(self.file_list, self._add_paths)
         layout.addWidget(self.file_list, stretch=2)
 
         progress_row = QHBoxLayout()
@@ -147,8 +145,9 @@ class OutboundTab(QWidget):
         layout.addWidget(self.preview, stretch=3)
 
         enable_file_drop(self, self._add_paths)
+        enable_file_drop(self.preview, self._add_paths)
 
-    def handle_dropped_paths(self, paths: list[Path]) -> None:
+    def handle_file_drop(self, paths: list[Path]) -> None:
         self._add_paths(paths)
 
     def _select_images(self) -> None:

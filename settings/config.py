@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 from typing import Any
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+from app_paths import project_root, resource_path
+
+PROJECT_ROOT = project_root()
 CONFIG_PATH = PROJECT_ROOT / "settings" / "config.json"
 
 DEFAULT_CONFIG: dict[str, Any] = {
@@ -16,14 +19,22 @@ DEFAULT_CONFIG: dict[str, Any] = {
 }
 
 
+def _seed_config_file() -> None:
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    bundled = resource_path("settings", "config.json")
+    if bundled.is_file():
+        shutil.copy2(bundled, CONFIG_PATH)
+        return
+    CONFIG_PATH.write_text(
+        json.dumps(DEFAULT_CONFIG, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+
 def load_config() -> dict[str, Any]:
     """Load config from disk, creating defaults if missing."""
     if not CONFIG_PATH.exists():
-        CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        CONFIG_PATH.write_text(
-            json.dumps(DEFAULT_CONFIG, indent=2, ensure_ascii=False) + "\n",
-            encoding="utf-8",
-        )
+        _seed_config_file()
         return dict(DEFAULT_CONFIG)
     with CONFIG_PATH.open(encoding="utf-8") as handle:
         data = json.load(handle)

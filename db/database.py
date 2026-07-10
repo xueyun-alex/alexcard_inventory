@@ -5,7 +5,9 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+from app_paths import project_root
+
+PROJECT_ROOT = project_root()
 DATA_DIR = PROJECT_ROOT / "data"
 DB_PATH = DATA_DIR / "inventory.db"
 PRODUCTS_DIR = DATA_DIR / "products"

@@ -8,7 +8,7 @@ from pathlib import Path
 import cv2
 from PIL import Image
 from PySide6.QtCore import Qt, QThread, Signal
-from PySide6.QtGui import QDragEnterEvent, QDropEvent, QImage, QPixmap
+from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
@@ -35,6 +35,7 @@ from db.models import (
     compute_image_hash_pil,
 )
 from settings.config import load_config
+from ui.file_drop import FileDropLabel, FileDropListWidget, enable_file_drop
 from ui.match_dialog import MatchConfirmDialog
 
 TEMP_INBOUND_DIR = DATA_DIR / "temp" / "inbound"
@@ -125,7 +126,7 @@ class RecognitionWorker(QThread):
             self.error.emit(str(exc))
 
 
-class DetectionPreview(QLabel):
+class DetectionPreview(FileDropLabel):
     """Shows source image with detection bounding boxes."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -207,13 +208,9 @@ class InboundTab(QWidget):
         toolbar.addWidget(btn_start)
         layout.addLayout(toolbar)
 
-        self.file_list = QListWidget()
-        self.file_list.setAcceptDrops(True)
-        self.file_list.setDragEnabled(False)
+        self.file_list = FileDropListWidget()
+        self.file_list.set_file_drop_callback(self._add_paths)
         self.file_list.itemSelectionChanged.connect(self._on_selection_changed)
-        self.file_list.dragEnterEvent = self._drag_enter  # type: ignore[method-assign]
-        self.file_list.dragMoveEvent = self._drag_enter  # type: ignore[method-assign]
-        self.file_list.dropEvent = self._drop  # type: ignore[method-assign]
         layout.addWidget(self.file_list, stretch=2)
 
         progress_row = QHBoxLayout()
@@ -226,7 +223,13 @@ class InboundTab(QWidget):
         layout.addLayout(progress_row)
 
         self.preview = DetectionPreview()
+        self.preview.set_file_drop_callback(self._add_paths)
         layout.addWidget(self.preview, stretch=3)
+
+        enable_file_drop(self, self._add_paths)
+
+    def handle_file_drop(self, paths: list[Path]) -> None:
+        self._add_paths(paths)
 
     def _select_images(self) -> None:
         files, _ = QFileDialog.getOpenFileNames(
@@ -255,15 +258,6 @@ class InboundTab(QWidget):
         self._detection_map.clear()
         self.progress_bar.setValue(0)
         self.status_label.setText("就绪")
-
-    def _drag_enter(self, event: QDragEnterEvent) -> None:
-        if event.mimeData().hasUrls():
-            event.acceptProposedAction()
-
-    def _drop(self, event: QDropEvent) -> None:
-        paths = [Path(url.toLocalFile()) for url in event.mimeData().urls()]
-        self._add_paths(paths)
-        event.acceptProposedAction()
 
     def _on_selection_changed(self) -> None:
         item = self.file_list.currentItem()
