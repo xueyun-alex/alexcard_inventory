@@ -36,6 +36,14 @@ class Product:
 
 
 @dataclass
+class SalesRankingRow:
+    product_id: int
+    name: str
+    image_path: str
+    sold_qty: int
+
+
+@dataclass
 class ImportDuplicate:
     source_path: Path
     source_name: str
@@ -837,3 +845,32 @@ def get_product_image_path(product: Product) -> Path:
     from db.database import DATA_DIR
 
     return DATA_DIR / product.image_path
+
+
+def list_sales_ranking(start: str, end: str) -> list[SalesRankingRow]:
+    """Rank products by summed manual stock decreases in [start, end]."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT p.id, p.name, p.image_path, SUM(-il.delta) AS sold_qty
+            FROM inventory_logs il
+            JOIN products p ON p.id = il.product_id
+            WHERE il.source = 'manual'
+              AND il.delta < 0
+              AND il.reverted_at IS NULL
+              AND il.created_at >= ?
+              AND il.created_at <= ?
+            GROUP BY p.id
+            ORDER BY sold_qty DESC
+            """,
+            (start, end),
+        ).fetchall()
+    return [
+        SalesRankingRow(
+            product_id=row["id"],
+            name=row["name"],
+            image_path=row["image_path"],
+            sold_qty=int(row["sold_qty"]),
+        )
+        for row in rows
+    ]

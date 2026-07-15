@@ -12,6 +12,7 @@ from ui.file_drop import accept_file_drag, paths_from_event
 from ui.history_tab import HistoryTab
 from ui.inbound_tab import InboundTab
 from ui.product_tab import ProductTab
+from ui.sales_ranking_tab import SalesRankingTab
 
 
 class DroppableTabWidget(QTabWidget):
@@ -56,16 +57,20 @@ class MainWindow(QMainWindow):
         product_tab = ProductTab()
         inbound_tab = InboundTab()
         history_tab = HistoryTab()
+        sales_tab = SalesRankingTab()
 
         inbound_tab.stock_updated.connect(product_tab.refresh_products)
         inbound_tab.stock_updated.connect(history_tab.refresh)
         product_tab.data_changed.connect(history_tab.refresh)
+        product_tab.data_changed.connect(sales_tab.refresh)
         history_tab.data_changed.connect(product_tab.refresh_products)
         history_tab.data_changed.connect(product_tab.refresh_categories)
+        history_tab.data_changed.connect(sales_tab.refresh)
 
         tabs.addTab(product_tab, "产品管理")
         tabs.addTab(inbound_tab, "入库")
         tabs.addTab(history_tab, "操作记录")
+        tabs.addTab(sales_tab, "销量排行榜")
 
         clear_tab = QTabWidget()
         clear_tab.setEnabled(False)
