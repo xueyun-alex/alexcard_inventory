@@ -20,15 +20,17 @@ def app_root() -> Path:
 def project_root() -> Path:
     """Writable project directory for data/ and settings/.
 
-    In development this is the repo root. When running a build under
-    ``dist/<AppName>/``, reuse the source tree so product data matches
-    ``python main.py``. Standalone copies fall back to the exe folder.
+    In development this is the repo root. When running a build anywhere
+    under the source tree (e.g. ``dist/<version>/<AppName>/``), walk up
+    the ancestors to find the repo root (marked by ``main.py``) so product
+    data matches ``python main.py``. Standalone copies distributed outside
+    the source tree fall back to the exe folder.
     """
     if is_frozen():
         exe_dir = Path(sys.executable).resolve().parent
-        source_root = exe_dir.parent.parent
-        if (source_root / "main.py").is_file():
-            return source_root
+        for parent in exe_dir.parents:
+            if (parent / "main.py").is_file():
+                return parent
         return exe_dir
     return Path(__file__).resolve().parent
 

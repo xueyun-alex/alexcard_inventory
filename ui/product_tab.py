@@ -104,7 +104,6 @@ class DuplicateProductsDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("重复产品")
-        self.resize(760, 420)
         self._load_generation = [0]
         self._thread_pool = QThreadPool.globalInstance()
         self._thumb_signals = ThumbnailSignals()
@@ -139,8 +138,8 @@ class DuplicateProductsDialog(QDialog):
         header_height = max(self.table.horizontalHeader().height(), 30)
         visible_rows = min(len(duplicates), DIALOG_MAX_VISIBLE_ROWS)
         table_height = header_height + row_height * visible_rows + 2
-        self.table.setMinimumHeight(table_height)
-        self.table.setMaximumHeight(table_height)
+        # 只限制最小高度为一行，初始高度通过 resize 设置，弹窗可自由缩放
+        self.table.setMinimumHeight(header_height + row_height + 2)
         self.table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.table.setSizePolicy(
             QSizePolicy.Policy.Expanding,
@@ -153,6 +152,9 @@ class DuplicateProductsDialog(QDialog):
         buttons.button(QDialogButtonBox.StandardButton.Ok).setText("确定")
         buttons.accepted.connect(self.accept)
         layout.addWidget(buttons)
+
+        self.setSizeGripEnabled(True)
+        self.resize(760, min(table_height + 120, 720))
 
     def _populate_row(
         self,
