@@ -22,6 +22,7 @@ class Category:
     id: int
     name: str
     sort_order: int
+    parent_id: int | None
     created_at: str
 
 
@@ -75,6 +76,7 @@ def _row_to_category(row: sqlite3.Row) -> Category:
         id=row["id"],
         name=row["name"],
         sort_order=row["sort_order"],
+        parent_id=row["parent_id"],
         created_at=row["created_at"],
     )
 
@@ -90,20 +92,36 @@ def _row_to_product(row: sqlite3.Row) -> Product:
     )
 
 
-def create_category(name: str) -> Category:
+def create_category(name: str, parent_id: int | None = None) -> Category:
     name = name.strip()
     if not name:
         raise ValueError("产品类名称不能为空")
     from db import changelog
 
     with get_connection() as conn:
+        parent_name: str | None = None
+        if parent_id is not None:
+            parent_row = conn.execute(
+                "SELECT name, parent_id FROM categories WHERE id = ?",
+                (parent_id,),
+            ).fetchone()
+            if parent_row is None:
+                raise ValueError("父产品类不存在")
+            if parent_row["parent_id"] is not None:
+                raise ValueError("产品类只支持一级子类")
+            parent_name = parent_row["name"]
         row = conn.execute(
-            "SELECT COALESCE(MAX(sort_order), -1) + 1 AS next_order FROM categories"
+            """
+            SELECT COALESCE(MAX(sort_order), -1) + 1 AS next_order
+            FROM categories
+            WHERE parent_id IS ?
+            """,
+            (parent_id,),
         ).fetchone()
         sort_order = row["next_order"]
         cursor = conn.execute(
-            "INSERT INTO categories (name, sort_order) VALUES (?, ?)",
-            (name, sort_order),
+            "INSERT INTO categories (name, sort_order, parent_id) VALUES (?, ?, ?)",
+            (name, sort_order, parent_id),
         )
         category_id = cursor.lastrowid
         row = conn.execute(
@@ -112,12 +130,17 @@ def create_category(name: str) -> Category:
         category = _row_to_category(row)
         changelog.record_change(
             "category_create",
-            f"新建产品类：{category.name}",
+            (
+                f"新建子类：{parent_name} / {category.name}"
+                if parent_name is not None
+                else f"新建产品类：{category.name}"
+            ),
             {
                 "category": {
                     "id": category.id,
                     "name": category.name,
                     "sort_order": category.sort_order,
+                    "parent_id": category.parent_id,
                     "created_at": category.created_at,
                 }
             },
@@ -165,8 +188,15 @@ def rename_category(category_id: int, name: str) -> Category:
 def count_products_in_category(category_id: int) -> int:
     with get_connection() as conn:
         row = conn.execute(
-            "SELECT COUNT(*) AS cnt FROM products WHERE category_id = ?",
-            (category_id,),
+            """
+            SELECT COUNT(*) AS cnt
+            FROM products
+            WHERE category_id = ?
+               OR category_id IN (
+                   SELECT id FROM categories WHERE parent_id = ?
+               )
+            """,
+            (category_id, category_id),
         ).fetchone()
         return row["cnt"]
 
@@ -181,7 +211,7 @@ def count_products_by_category() -> dict[int | None, int]:
 
 
 def get_product_stats_by_category() -> dict[int | None, tuple[int, int]]:
-    """Return (product count, total stock) keyed by category_id."""
+    """Return direct stats for children and rolled-up stats for parent categories."""
     with get_connection() as conn:
         rows = conn.execute(
             """
@@ -191,10 +221,21 @@ def get_product_stats_by_category() -> dict[int | None, tuple[int, int]]:
             GROUP BY category_id
             """
         ).fetchall()
-        return {
+        stats = {
             row["category_id"]: (row["product_count"], row["total_stock"])
             for row in rows
         }
+        categories = conn.execute(
+            "SELECT id, parent_id FROM categories WHERE parent_id IS NOT NULL"
+        ).fetchall()
+        for category in categories:
+            child_count, child_stock = stats.get(category["id"], (0, 0))
+            parent_count, parent_stock = stats.get(category["parent_id"], (0, 0))
+            stats[category["parent_id"]] = (
+                parent_count + child_count,
+                parent_stock + child_stock,
+            )
+        return stats
 
 
 def delete_category(category_id: int) -> int:
@@ -207,6 +248,12 @@ def delete_category(category_id: int) -> int:
         ).fetchone()
         if row is None:
             raise ValueError("产品类不存在")
+        child_row = conn.execute(
+            "SELECT name FROM categories WHERE parent_id = ? ORDER BY sort_order, id LIMIT 1",
+            (category_id,),
+        ).fetchone()
+        if child_row is not None:
+            raise ValueError("该产品类下还有子类，请先删除子类")
         affected_rows = conn.execute(
             "SELECT id FROM products WHERE category_id = ?",
             (category_id,),
@@ -228,6 +275,7 @@ def delete_category(category_id: int) -> int:
                     "id": category.id,
                     "name": category.name,
                     "sort_order": category.sort_order,
+                    "parent_id": category.parent_id,
                     "created_at": category.created_at,
                 },
                 "affected_product_ids": affected_product_ids,
@@ -241,7 +289,17 @@ def delete_category(category_id: int) -> int:
 def list_categories() -> list[Category]:
     with get_connection() as conn:
         rows = conn.execute(
-            "SELECT * FROM categories ORDER BY sort_order, id"
+            """
+            SELECT child.*
+            FROM categories AS child
+            LEFT JOIN categories AS parent ON parent.id = child.parent_id
+            ORDER BY
+                COALESCE(parent.sort_order, child.sort_order),
+                COALESCE(parent.id, child.id),
+                CASE WHEN child.parent_id IS NULL THEN 0 ELSE 1 END,
+                child.sort_order,
+                child.id
+            """
         ).fetchall()
         return [_row_to_category(row) for row in rows]
 
@@ -726,8 +784,16 @@ def list_products(category_id: int | None = None) -> list[Product]:
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT * FROM products WHERE category_id = ? ORDER BY id DESC",
-                (category_id,),
+                """
+                SELECT *
+                FROM products
+                WHERE category_id = ?
+                   OR category_id IN (
+                       SELECT id FROM categories WHERE parent_id = ?
+                   )
+                ORDER BY id DESC
+                """,
+                (category_id, category_id),
             ).fetchall()
         return [_row_to_product(row) for row in rows]
 

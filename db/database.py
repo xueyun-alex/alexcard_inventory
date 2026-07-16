@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS categories (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL UNIQUE,
     sort_order INTEGER NOT NULL DEFAULT 0,
+    parent_id INTEGER NULL REFERENCES categories(id) ON DELETE RESTRICT,
     created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
 );
 
@@ -58,6 +59,45 @@ CREATE INDEX IF NOT EXISTS idx_change_logs_created ON change_logs(created_at DES
 
 
 def _migrate_schema(conn: sqlite3.Connection) -> None:
+    category_columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(categories)").fetchall()
+    }
+    if "parent_id" not in category_columns:
+        conn.execute(
+            "ALTER TABLE categories ADD COLUMN parent_id INTEGER "
+            "REFERENCES categories(id) ON DELETE RESTRICT"
+        )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_categories_parent ON categories(parent_id)"
+    )
+    conn.executescript(
+        """
+        CREATE TRIGGER IF NOT EXISTS categories_one_level_insert
+        BEFORE INSERT ON categories
+        WHEN NEW.parent_id IS NOT NULL
+        BEGIN
+            SELECT CASE
+                WHEN NEW.parent_id = NEW.id
+                  OR (SELECT parent_id FROM categories WHERE id = NEW.parent_id) IS NOT NULL
+                THEN RAISE(ABORT, '产品类只支持一级子类')
+            END;
+        END;
+        CREATE TRIGGER IF NOT EXISTS categories_one_level_update
+        BEFORE UPDATE OF parent_id ON categories
+        WHEN NEW.parent_id IS NOT NULL
+        BEGIN
+            SELECT CASE
+                WHEN NEW.parent_id = NEW.id
+                  OR (SELECT parent_id FROM categories WHERE id = NEW.parent_id) IS NOT NULL
+                  OR EXISTS (
+                      SELECT 1 FROM categories WHERE parent_id = NEW.id
+                  )
+                THEN RAISE(ABORT, '产品类只支持一级子类')
+            END;
+        END;
+        """
+    )
+
     columns = {
         row[1] for row in conn.execute("PRAGMA table_info(products)").fetchall()
     }

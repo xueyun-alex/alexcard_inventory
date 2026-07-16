@@ -111,10 +111,18 @@ def _category_name(conn: sqlite3.Connection, category_id: int | None) -> str:
     if category_id is None:
         return "未归类"
     row = conn.execute(
-        "SELECT name FROM categories WHERE id = ?", (category_id,)
+        """
+        SELECT child.name, parent.name AS parent_name
+        FROM categories AS child
+        LEFT JOIN categories AS parent ON parent.id = child.parent_id
+        WHERE child.id = ?
+        """,
+        (category_id,),
     ).fetchone()
     if row is None:
         return f"产品类#{category_id}"
+    if row["parent_name"] is not None:
+        return f"{row['parent_name']} / {row['name']}"
     return row["name"]
 
 
@@ -320,6 +328,12 @@ def _revert_category_create(conn: sqlite3.Connection, log: ChangeLog) -> None:
     ).fetchone()
     if count_row["cnt"] > 0:
         raise ValueError("产品类下已有产品，无法回退新建操作")
+    child_row = conn.execute(
+        "SELECT id FROM categories WHERE parent_id = ? LIMIT 1",
+        (category_id,),
+    ).fetchone()
+    if child_row is not None:
+        raise ValueError("产品类下已有子类，无法回退新建操作")
     conn.execute("DELETE FROM categories WHERE id = ?", (category_id,))
 
 
@@ -346,20 +360,31 @@ def _revert_category_rename(conn: sqlite3.Connection, log: ChangeLog) -> None:
 def _revert_category_delete(conn: sqlite3.Connection, log: ChangeLog) -> None:
     category = log.payload["category"]
     old_name = category["name"]
+    parent_id = category.get("parent_id")
     existing = conn.execute(
         "SELECT id FROM categories WHERE name = ?", (old_name,)
     ).fetchone()
     if existing is not None:
         raise ValueError(f"已存在名为「{old_name}」的产品类，无法回退")
+    if parent_id is not None:
+        parent = conn.execute(
+            "SELECT id, parent_id FROM categories WHERE id = ?",
+            (parent_id,),
+        ).fetchone()
+        if parent is None:
+            raise ValueError("原父产品类已不存在，无法回退")
+        if parent["parent_id"] is not None:
+            raise ValueError("原父产品类已变为子类，无法回退")
     cursor = conn.execute(
         """
-        INSERT INTO categories (id, name, sort_order, created_at)
-        VALUES (?, ?, ?, ?)
+        INSERT INTO categories (id, name, sort_order, parent_id, created_at)
+        VALUES (?, ?, ?, ?, ?)
         """,
         (
             category["id"],
             category["name"],
             category["sort_order"],
+            parent_id,
             category["created_at"],
         ),
     )

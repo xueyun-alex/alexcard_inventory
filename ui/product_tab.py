@@ -57,6 +57,19 @@ SORT_ASC = "asc"
 SORT_DESC = "desc"
 
 
+def category_display_names(categories: list[Category]) -> dict[int, str]:
+    """Return category names with the parent path for child categories."""
+    names = {category.id: category.name for category in categories}
+    return {
+        category.id: (
+            f"{names.get(category.parent_id, '未知父类')} / {category.name}"
+            if category.parent_id is not None
+            else category.name
+        )
+        for category in categories
+    }
+
+
 class StockAdjustDialog(QDialog):
     def __init__(self, product_count: int, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -111,7 +124,7 @@ class DuplicateProductsDialog(QDialog):
         self._thumb_signals.loaded.connect(self._on_thumbnail_loaded)
         self._thumb_labels: dict[str, QLabel] = {}
 
-        categories = {c.id: c.name for c in models.list_categories()}
+        categories = category_display_names(models.list_categories())
 
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel(f"跳过 {len(duplicates)} 个重复产品："))
@@ -388,7 +401,12 @@ class CategorySelectDialog(QDialog):
         self.list_widget.addItem(uncategorized_item)
 
         for category in categories:
-            item = QListWidgetItem(category.name)
+            label = (
+                f"    └─ {category.name}"
+                if category.parent_id is not None
+                else category.name
+            )
+            item = QListWidgetItem(label)
             item.setData(Qt.ItemDataRole.UserRole, category.id)
             self.list_widget.addItem(item)
 
@@ -501,10 +519,18 @@ class ProductTab(QWidget):
         if item is not None:
             current_data = item.data(Qt.ItemDataRole.UserRole)
 
+        categories = models.list_categories()
         stats = models.get_product_stats_by_category()
-        total_count = sum(product_count for product_count, _stock in stats.values())
-        total_stock = sum(stock for _product_count, stock in stats.values())
         uncategorized_count, uncategorized_stock = stats.get(None, (0, 0))
+        parent_ids = {
+            category.id for category in categories if category.parent_id is None
+        }
+        total_count = uncategorized_count + sum(
+            stats.get(category_id, (0, 0))[0] for category_id in parent_ids
+        )
+        total_stock = uncategorized_stock + sum(
+            stats.get(category_id, (0, 0))[1] for category_id in parent_ids
+        )
 
         self.category_list.clear()
 
@@ -518,10 +544,15 @@ class ProductTab(QWidget):
         uncategorized_item.setData(Qt.ItemDataRole.UserRole, FILTER_UNCATEGORIZED)
         self.category_list.addItem(uncategorized_item)
 
-        for category in models.list_categories():
+        for category in categories:
             product_count, stock = stats.get(category.id, (0, 0))
+            category_name = (
+                f"    └─ {category.name}"
+                if category.parent_id is not None
+                else category.name
+            )
             cat_item = QListWidgetItem(
-                f"{category.name} ({product_count})【库存 {stock}】"
+                f"{category_name} ({product_count})【库存 {stock}】"
             )
             cat_item.setData(Qt.ItemDataRole.UserRole, category.id)
             self.category_list.addItem(cat_item)
@@ -719,6 +750,26 @@ class ProductTab(QWidget):
         except Exception as exc:
             QMessageBox.warning(self, "错误", str(exc))
 
+    def create_subcategory_dialog(self, parent_id: int) -> None:
+        categories = {category.id: category for category in models.list_categories()}
+        parent = categories.get(parent_id)
+        if parent is None or parent.parent_id is not None:
+            QMessageBox.warning(self, "错误", "只能在父产品类下新建一级子类")
+            return
+        name, ok = QInputDialog.getText(
+            self,
+            "新建子类",
+            f"在「{parent.name}」下新建子类：",
+        )
+        if not ok or not name.strip():
+            return
+        try:
+            models.create_category(name, parent_id=parent_id)
+            self.refresh_categories()
+            self.data_changed.emit()
+        except Exception as exc:
+            QMessageBox.warning(self, "错误", str(exc))
+
     def _category_context_menu(self, pos: QPoint) -> None:
         item = self.category_list.itemAt(pos)
         if item is None:
@@ -728,12 +779,23 @@ class ProductTab(QWidget):
             return
 
         category_id = int(data)
+        categories = {category.id: category for category in models.list_categories()}
+        category = categories.get(category_id)
+        if category is None:
+            return
         menu = QMenu(self)
+        new_child_action = (
+            menu.addAction("新建子类")
+            if category.parent_id is None
+            else None
+        )
         rename_action = menu.addAction("重命名")
         delete_action = menu.addAction("删除")
         export_action = menu.addAction("导出零库存产品图")
         action = menu.exec(self.category_list.mapToGlobal(pos))
-        if action == rename_action:
+        if new_child_action is not None and action == new_child_action:
+            self.create_subcategory_dialog(category_id)
+        elif action == rename_action:
             self._rename_category(category_id)
         elif action == delete_action:
             self._delete_category(category_id)
@@ -816,9 +878,19 @@ class ProductTab(QWidget):
             QMessageBox.warning(self, "错误", str(exc))
 
     def _delete_category(self, category_id: int) -> None:
-        categories = {c.id: c for c in models.list_categories()}
+        category_list = models.list_categories()
+        categories = {c.id: c for c in category_list}
         category = categories.get(category_id)
         if category is None:
+            return
+        children = [c for c in category_list if c.parent_id == category_id]
+        if children:
+            QMessageBox.information(
+                self,
+                "无法删除",
+                f"产品类「{category.name}」下还有 {len(children)} 个子类，"
+                "请先删除子类。",
+            )
             return
         count = models.count_products_in_category(category_id)
         if count > 0:
