@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QListWidget,
     QListWidgetItem,
+    QLineEdit,
     QMenu,
     QMessageBox,
     QPushButton,
@@ -51,6 +52,7 @@ DIALOG_MAX_VISIBLE_ROWS = 8
 
 FILTER_ALL = "all"
 FILTER_UNCATEGORIZED = "uncategorized"
+FILTER_NO_RESULTS = "no_results"
 
 SORT_DEFAULT = "default"
 SORT_ASC = "asc"
@@ -435,6 +437,7 @@ class ProductTab(QWidget):
     def __init__(self) -> None:
         super().__init__()
         self._current_filter: str | int = FILTER_ALL
+        self._category_search = ""
         self._stock_sort = SORT_DEFAULT
         self._cards: dict[int, ProductCard] = {}
         self._last_clicked_id: int | None = None
@@ -467,6 +470,24 @@ class ProductTab(QWidget):
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
 
+        left_panel = QWidget()
+        left_layout = QVBoxLayout(left_panel)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(4)
+
+        search_layout = QHBoxLayout()
+        self.category_search_input = QLineEdit()
+        self.category_search_input.setPlaceholderText("搜索产品类")
+        btn_search_category = QPushButton("搜索")
+        btn_reset_category_search = QPushButton("重置")
+        self.category_search_input.returnPressed.connect(self._apply_category_search)
+        btn_search_category.clicked.connect(self._apply_category_search)
+        btn_reset_category_search.clicked.connect(self._reset_category_search)
+        search_layout.addWidget(self.category_search_input, stretch=1)
+        search_layout.addWidget(btn_search_category)
+        search_layout.addWidget(btn_reset_category_search)
+        left_layout.addLayout(search_layout)
+
         self.category_list = QListWidget()
         self.category_list.setMinimumWidth(180)
         self.category_list.setMaximumWidth(260)
@@ -478,6 +499,7 @@ class ProductTab(QWidget):
         self.category_list.dropEvent = self._category_drop_event  # type: ignore[method-assign]
         self.category_list.dragEnterEvent = self._category_drag_enter  # type: ignore[method-assign]
         self.category_list.dragMoveEvent = self._category_drag_enter  # type: ignore[method-assign]
+        left_layout.addWidget(self.category_list)
 
         self.right_panel = QWidget()
         right_layout = QVBoxLayout(self.right_panel)
@@ -504,7 +526,7 @@ class ProductTab(QWidget):
         select_all_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         select_all_shortcut.activated.connect(self._select_all_products)
 
-        splitter.addWidget(self.category_list)
+        splitter.addWidget(left_panel)
         splitter.addWidget(self.right_panel)
         splitter.setStretchFactor(1, 1)
         layout.addWidget(splitter)
@@ -513,13 +535,44 @@ class ProductTab(QWidget):
         enable_file_drop(self.scroll_area, self._import_dropped_paths)
         enable_file_drop(self.grid_container, self._import_dropped_paths)
 
-    def refresh_categories(self) -> None:
-        current_data = None
-        item = self.category_list.currentItem()
-        if item is not None:
-            current_data = item.data(Qt.ItemDataRole.UserRole)
+    def _filtered_categories(self, categories: list[Category]) -> list[Category]:
+        keyword = self._category_search.casefold()
+        if not keyword:
+            return categories
+
+        parents = {
+            category.id: category
+            for category in categories
+            if category.parent_id is None
+        }
+        matching_parent_ids = {
+            category.id
+            for category in parents.values()
+            if keyword in category.name.casefold()
+        }
+        matching_child_ids = {
+            category.id
+            for category in categories
+            if category.parent_id is not None
+            and keyword in category.name.casefold()
+        }
+        visible_ids = set(matching_parent_ids) | set(matching_child_ids)
+        for category in categories:
+            if category.parent_id in matching_parent_ids:
+                visible_ids.add(category.id)
+            if category.id in matching_child_ids and category.parent_id in parents:
+                visible_ids.add(category.parent_id)
+        return [category for category in categories if category.id in visible_ids]
+
+    def refresh_categories(self, preferred_data: str | int | None = None) -> None:
+        current_data = preferred_data
+        if current_data is None:
+            item = self.category_list.currentItem()
+            if item is not None:
+                current_data = item.data(Qt.ItemDataRole.UserRole)
 
         categories = models.list_categories()
+        visible_categories = self._filtered_categories(categories)
         stats = models.get_product_stats_by_category()
         uncategorized_count, uncategorized_stock = stats.get(None, (0, 0))
         parent_ids = {
@@ -534,17 +587,18 @@ class ProductTab(QWidget):
 
         self.category_list.clear()
 
-        all_item = QListWidgetItem(f"全部 ({total_count})【库存 {total_stock}】")
-        all_item.setData(Qt.ItemDataRole.UserRole, FILTER_ALL)
-        self.category_list.addItem(all_item)
+        if not self._category_search:
+            all_item = QListWidgetItem(f"全部 ({total_count})【库存 {total_stock}】")
+            all_item.setData(Qt.ItemDataRole.UserRole, FILTER_ALL)
+            self.category_list.addItem(all_item)
 
-        uncategorized_item = QListWidgetItem(
-            f"未归类 ({uncategorized_count})【库存 {uncategorized_stock}】"
-        )
-        uncategorized_item.setData(Qt.ItemDataRole.UserRole, FILTER_UNCATEGORIZED)
-        self.category_list.addItem(uncategorized_item)
+            uncategorized_item = QListWidgetItem(
+                f"未归类 ({uncategorized_count})【库存 {uncategorized_stock}】"
+            )
+            uncategorized_item.setData(Qt.ItemDataRole.UserRole, FILTER_UNCATEGORIZED)
+            self.category_list.addItem(uncategorized_item)
 
-        for category in categories:
+        for category in visible_categories:
             product_count, stock = stats.get(category.id, (0, 0))
             category_name = (
                 f"    └─ {category.name}"
@@ -571,11 +625,35 @@ class ProductTab(QWidget):
         finally:
             self.category_list.blockSignals(False)
 
+        selected_item = self.category_list.currentItem()
+        self._current_filter = (
+            selected_item.data(Qt.ItemDataRole.UserRole)
+            if selected_item is not None
+            else FILTER_NO_RESULTS
+        )
+
+    def _apply_category_search(self) -> None:
+        self._category_search = self.category_search_input.text().strip()
+        self.refresh_categories()
+        self._stock_sort = SORT_DEFAULT
+        self._update_sort_button()
+        self.refresh_products()
+
+    def _reset_category_search(self) -> None:
+        self.category_search_input.clear()
+        self._category_search = ""
+        self.refresh_categories(preferred_data=FILTER_ALL)
+        self._stock_sort = SORT_DEFAULT
+        self._update_sort_button()
+        self.refresh_products()
+
     def refresh_all(self) -> None:
         self.refresh_categories()
         self.refresh_products()
 
     def _fetch_products(self) -> list[Product]:
+        if self._current_filter == FILTER_NO_RESULTS:
+            return []
         if self._current_filter == FILTER_ALL:
             return models.list_products(None)
         if self._current_filter == FILTER_UNCATEGORIZED:
