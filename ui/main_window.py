@@ -59,7 +59,7 @@ class MainWindow(QMainWindow):
         history_tab = HistoryTab()
         sales_tab = SalesRankingTab()
 
-        inbound_tab.stock_updated.connect(product_tab.refresh_products)
+        inbound_tab.stock_updated.connect(product_tab.refresh_all)
         inbound_tab.stock_updated.connect(history_tab.refresh)
         product_tab.data_changed.connect(history_tab.refresh)
         product_tab.data_changed.connect(sales_tab.refresh)

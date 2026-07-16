@@ -180,6 +180,23 @@ def count_products_by_category() -> dict[int | None, int]:
         return {row["category_id"]: row["cnt"] for row in rows}
 
 
+def get_product_stats_by_category() -> dict[int | None, tuple[int, int]]:
+    """Return (product count, total stock) keyed by category_id."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT category_id, COUNT(*) AS product_count,
+                   COALESCE(SUM(stock), 0) AS total_stock
+            FROM products
+            GROUP BY category_id
+            """
+        ).fetchall()
+        return {
+            row["category_id"]: (row["product_count"], row["total_stock"])
+            for row in rows
+        }
+
+
 def delete_category(category_id: int) -> int:
     """Delete category. Returns count of products that were in this category."""
     from db import changelog

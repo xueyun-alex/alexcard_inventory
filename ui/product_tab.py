@@ -501,23 +501,28 @@ class ProductTab(QWidget):
         if item is not None:
             current_data = item.data(Qt.ItemDataRole.UserRole)
 
-        counts = models.count_products_by_category()
-        total_count = sum(counts.values())
-        uncategorized_count = counts.get(None, 0)
+        stats = models.get_product_stats_by_category()
+        total_count = sum(product_count for product_count, _stock in stats.values())
+        total_stock = sum(stock for _product_count, stock in stats.values())
+        uncategorized_count, uncategorized_stock = stats.get(None, (0, 0))
 
         self.category_list.clear()
 
-        all_item = QListWidgetItem(f"全部 ({total_count})")
+        all_item = QListWidgetItem(f"全部 ({total_count})【库存 {total_stock}】")
         all_item.setData(Qt.ItemDataRole.UserRole, FILTER_ALL)
         self.category_list.addItem(all_item)
 
-        uncategorized_item = QListWidgetItem(f"未归类 ({uncategorized_count})")
+        uncategorized_item = QListWidgetItem(
+            f"未归类 ({uncategorized_count})【库存 {uncategorized_stock}】"
+        )
         uncategorized_item.setData(Qt.ItemDataRole.UserRole, FILTER_UNCATEGORIZED)
         self.category_list.addItem(uncategorized_item)
 
         for category in models.list_categories():
-            count = counts.get(category.id, 0)
-            cat_item = QListWidgetItem(f"{category.name} ({count})")
+            product_count, stock = stats.get(category.id, (0, 0))
+            cat_item = QListWidgetItem(
+                f"{category.name} ({product_count})【库存 {stock}】"
+            )
             cat_item.setData(Qt.ItemDataRole.UserRole, category.id)
             self.category_list.addItem(cat_item)
 
@@ -1013,6 +1018,7 @@ class ProductTab(QWidget):
                         card.update_stock(updated.stock)
             if self._stock_sort != SORT_DEFAULT:
                 self._relayout_grid()
+            self.refresh_categories()
             self.data_changed.emit()
         except Exception as exc:
             QMessageBox.warning(self, "错误", str(exc))
