@@ -438,6 +438,9 @@ class ProductTab(QWidget):
         super().__init__()
         self._current_filter: str | int = FILTER_ALL
         self._category_search = ""
+        self._expanded_parent_ids: set[int] = set()
+        self._search_expanded_parent_ids: set[int] = set()
+        self._search_collapsed_parent_ids: set[int] = set()
         self._stock_sort = SORT_DEFAULT
         self._cards: dict[int, ProductCard] = {}
         self._last_clicked_id: int | None = None
@@ -492,6 +495,7 @@ class ProductTab(QWidget):
         self.category_list.setMinimumWidth(180)
         self.category_list.setMaximumWidth(260)
         self.category_list.currentItemChanged.connect(self._on_category_changed)
+        self.category_list.itemClicked.connect(self._on_category_clicked)
         self.category_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.category_list.customContextMenuRequested.connect(self._category_context_menu)
         self.category_list.setAcceptDrops(True)
@@ -575,15 +579,33 @@ class ProductTab(QWidget):
         visible_categories = self._filtered_categories(categories)
         stats = models.get_product_stats_by_category()
         uncategorized_count, uncategorized_stock = stats.get(None, (0, 0))
+        categories_by_id = {category.id: category for category in categories}
         parent_ids = {
             category.id for category in categories if category.parent_id is None
         }
+        parents_with_children = {
+            category.parent_id
+            for category in categories
+            if category.parent_id is not None
+        }
+        expanded_parent_ids = (
+            self._expanded_parent_ids | self._search_expanded_parent_ids
+        ) - self._search_collapsed_parent_ids
         total_count = uncategorized_count + sum(
             stats.get(category_id, (0, 0))[0] for category_id in parent_ids
         )
         total_stock = uncategorized_stock + sum(
             stats.get(category_id, (0, 0))[1] for category_id in parent_ids
         )
+
+        if isinstance(current_data, int):
+            current_category = categories_by_id.get(current_data)
+            if (
+                current_category is not None
+                and current_category.parent_id is not None
+                and current_category.parent_id not in expanded_parent_ids
+            ):
+                current_data = current_category.parent_id
 
         self.category_list.clear()
 
@@ -599,12 +621,19 @@ class ProductTab(QWidget):
             self.category_list.addItem(uncategorized_item)
 
         for category in visible_categories:
+            if (
+                category.parent_id is not None
+                and category.parent_id not in expanded_parent_ids
+            ):
+                continue
             product_count, stock = stats.get(category.id, (0, 0))
-            category_name = (
-                f"    └─ {category.name}"
-                if category.parent_id is not None
-                else category.name
-            )
+            if category.parent_id is not None:
+                category_name = f"    └─ {category.name}"
+            elif category.id in parents_with_children:
+                marker = "▼" if category.id in expanded_parent_ids else "▶"
+                category_name = f"{marker} {category.name}"
+            else:
+                category_name = category.name
             cat_item = QListWidgetItem(
                 f"{category_name} ({product_count})【库存 {stock}】"
             )
@@ -634,6 +663,15 @@ class ProductTab(QWidget):
 
     def _apply_category_search(self) -> None:
         self._category_search = self.category_search_input.text().strip()
+        self._search_expanded_parent_ids.clear()
+        self._search_collapsed_parent_ids.clear()
+        if self._category_search:
+            visible_categories = self._filtered_categories(models.list_categories())
+            self._search_expanded_parent_ids.update(
+                category.parent_id
+                for category in visible_categories
+                if category.parent_id is not None
+            )
         self.refresh_categories()
         self._stock_sort = SORT_DEFAULT
         self._update_sort_button()
@@ -642,6 +680,8 @@ class ProductTab(QWidget):
     def _reset_category_search(self) -> None:
         self.category_search_input.clear()
         self._category_search = ""
+        self._search_expanded_parent_ids.clear()
+        self._search_collapsed_parent_ids.clear()
         self.refresh_categories(preferred_data=FILTER_ALL)
         self._stock_sort = SORT_DEFAULT
         self._update_sort_button()
@@ -782,6 +822,37 @@ class ProductTab(QWidget):
         self._update_sort_button()
         self.refresh_products()
 
+    def _on_category_clicked(self, item: QListWidgetItem) -> None:
+        data = item.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(data, int):
+            return
+
+        categories = models.list_categories()
+        category = next(
+            (candidate for candidate in categories if candidate.id == data),
+            None,
+        )
+        if category is None or category.parent_id is not None:
+            return
+        if not any(candidate.parent_id == category.id for candidate in categories):
+            return
+
+        if self._category_search:
+            is_expanded = category.id in (
+                self._expanded_parent_ids | self._search_expanded_parent_ids
+            ) - self._search_collapsed_parent_ids
+            if is_expanded:
+                self._search_expanded_parent_ids.discard(category.id)
+                self._search_collapsed_parent_ids.add(category.id)
+            else:
+                self._search_collapsed_parent_ids.discard(category.id)
+                self._search_expanded_parent_ids.add(category.id)
+        elif category.id in self._expanded_parent_ids:
+            self._expanded_parent_ids.remove(category.id)
+        else:
+            self._expanded_parent_ids.add(category.id)
+        self.refresh_categories(preferred_data=category.id)
+
     def _on_card_clicked(self, product_id: int, event: QMouseEvent) -> None:
         modifiers = event.modifiers()
         card = self._cards.get(product_id)
@@ -843,7 +914,8 @@ class ProductTab(QWidget):
             return
         try:
             models.create_category(name, parent_id=parent_id)
-            self.refresh_categories()
+            self._expanded_parent_ids.add(parent_id)
+            self.refresh_categories(preferred_data=parent_id)
             self.data_changed.emit()
         except Exception as exc:
             QMessageBox.warning(self, "错误", str(exc))
