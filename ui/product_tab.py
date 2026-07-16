@@ -677,11 +677,72 @@ class ProductTab(QWidget):
         menu = QMenu(self)
         rename_action = menu.addAction("重命名")
         delete_action = menu.addAction("删除")
+        export_action = menu.addAction("导出零库存产品图")
         action = menu.exec(self.category_list.mapToGlobal(pos))
         if action == rename_action:
             self._rename_category(category_id)
         elif action == delete_action:
             self._delete_category(category_id)
+        elif action == export_action:
+            self._export_zero_stock_collage(category_id)
+
+    def _export_zero_stock_collage(self, category_id: int) -> None:
+        from datetime import date
+
+        from PySide6.QtWidgets import QApplication, QFileDialog
+
+        from core.collage import build_collage
+
+        categories = {c.id: c for c in models.list_categories()}
+        category = categories.get(category_id)
+        if category is None:
+            return
+
+        zero_products = [
+            p for p in models.list_products(category_id) if p.stock == 0
+        ]
+        if not zero_products:
+            QMessageBox.information(
+                self,
+                "提示",
+                f"产品类「{category.name}」下没有库存为 0 的产品。",
+            )
+            return
+
+        default_name = f"{category.name}_零库存_{date.today().isoformat()}.png"
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "导出零库存产品图",
+            default_name,
+            "PNG 图片 (*.png);;JPG 图片 (*.jpg *.jpeg)",
+        )
+        if not file_path:
+            return
+
+        items = [
+            (p.name, models.get_product_image_path(p)) for p in zero_products
+        ]
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            added, skipped = build_collage(items, Path(file_path))
+        except Exception as exc:
+            QMessageBox.warning(self, "导出失败", str(exc))
+            return
+        finally:
+            QApplication.restoreOverrideCursor()
+
+        if added == 0:
+            QMessageBox.warning(
+                self,
+                "导出失败",
+                f"共 {skipped} 个产品的图片缺失或无法读取，未生成图片。",
+            )
+            return
+
+        message = f"已导出 {added} 个零库存产品到：\n{file_path}"
+        if skipped:
+            message += f"\n\n另有 {skipped} 个产品图片缺失或无法读取，已跳过。"
+        QMessageBox.information(self, "导出完成", message)
 
     def _rename_category(self, category_id: int) -> None:
         categories = {c.id: c for c in models.list_categories()}
