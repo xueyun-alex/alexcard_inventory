@@ -15,6 +15,7 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QDrag, QKeySequence, QMouseEvent, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QAbstractSpinBox,
+    QApplication,
     QDialog,
     QDialogButtonBox,
     QGridLayout,
@@ -221,8 +222,37 @@ class DuplicateProductsDialog(QDialog):
         super().closeEvent(event)
 
 
+class ImagePreviewDialog(QDialog):
+    """Shows the original product image, scaled down to fit the screen if needed."""
+
+    def __init__(self, title: str, pixmap: QPixmap, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(f"{title} — {pixmap.width()}×{pixmap.height()}")
+
+        screen = self.screen() or QApplication.primaryScreen()
+        available = screen.availableGeometry()
+        max_width = int(available.width() * 0.9)
+        max_height = int(available.height() * 0.9)
+        if pixmap.width() > max_width or pixmap.height() > max_height:
+            pixmap = pixmap.scaled(
+                max_width,
+                max_height,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+
+        image_label = QLabel()
+        image_label.setPixmap(pixmap)
+        image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(image_label)
+
+
 class ProductCard(QWidget):
     clicked = Signal(int, object)  # product_id, QMouseEvent
+    double_clicked = Signal(object)  # product
     rename_requested = Signal(object)
     delete_requested = Signal(object)
     stock_adjust_requested = Signal(object)
@@ -311,6 +341,11 @@ class ProductCard(QWidget):
         if event.button() == Qt.MouseButton.LeftButton:
             self.clicked.emit(self.product.id, event)
         super().mousePressEvent(event)
+
+    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.double_clicked.emit(self.product)
+        super().mouseDoubleClickEvent(event)
 
     def _show_context_menu(self, pos: QPoint) -> None:
         menu = QMenu(self)
@@ -577,6 +612,7 @@ class ProductTab(QWidget):
         for index, product in enumerate(products):
             card = ProductCard(product)
             card.clicked.connect(self._on_card_clicked)
+            card.double_clicked.connect(self._show_original_image)
             card.rename_requested.connect(self.rename_product_dialog)
             card.delete_requested.connect(self.delete_product_confirm)
             card.stock_adjust_requested.connect(self.modify_stock_dialog)
@@ -606,6 +642,19 @@ class ProductTab(QWidget):
         card = self._cards.get(product_id)
         if card is not None:
             card.set_pixmap(pixmap)
+
+    def _show_original_image(self, product: Product) -> None:
+        image_path = models.get_product_image_path(product)
+        pixmap = QPixmap(str(image_path)) if image_path.exists() else QPixmap()
+        if pixmap.isNull():
+            QMessageBox.warning(
+                self,
+                "无法预览",
+                f"图片文件不存在或无法加载：\n{image_path}",
+            )
+            return
+        dialog = ImagePreviewDialog(product.name, pixmap, self)
+        dialog.exec()
 
     def _on_category_changed(
         self,
