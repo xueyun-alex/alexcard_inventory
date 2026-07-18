@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import date, timedelta
 
 from PySide6.QtCore import QDate, Qt, QThreadPool, Slot
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
     QDateEdit,
     QHBoxLayout,
@@ -155,11 +155,12 @@ class SalesRankingTab(QWidget):
             self.table.setItem(row_index, 2, QTableWidgetItem(row.name))
             self.table.setItem(row_index, 3, QTableWidgetItem(str(row.sold_qty)))
 
-    @Slot(str, QPixmap)
-    def _on_thumbnail_loaded(self, key: str, pixmap: QPixmap) -> None:
+    @Slot(str, QImage)
+    def _on_thumbnail_loaded(self, key: str, image: QImage) -> None:
         label = self._thumb_labels.get(key)
         if label is None:
             return
+        pixmap = QPixmap.fromImage(image)
         scaled = pixmap.scaled(
             THUMB_SIZE,
             THUMB_SIZE,

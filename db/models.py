@@ -566,11 +566,19 @@ def adjust_stock_batch(product_ids: list[int], delta: int) -> None:
     """Apply the same stock delta to multiple products as one logged operation."""
     if delta == 0 or not product_ids:
         return
+    adjust_stock_items([(product_id, delta) for product_id in product_ids])
+
+
+def adjust_stock_items(items: list[tuple[int, int]]) -> None:
+    """Apply per-product stock deltas as one logged manual operation."""
+    items = [(product_id, delta) for product_id, delta in items if delta != 0]
+    if not items:
+        return
     from db import changelog
 
     with get_connection() as conn:
         entries: list[dict] = []
-        for product_id in product_ids:
+        for product_id, delta in items:
             inventory_log_id, stock_before, _product_name = _increment_stock_core(
                 conn, product_id, delta, "manual", None
             )

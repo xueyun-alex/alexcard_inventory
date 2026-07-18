@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QThreadPool, Slot
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
@@ -170,11 +170,12 @@ class InboundConfirmDialog(QDialog):
         )
         self._thread_pool.start(loader)
 
-    @Slot(str, QPixmap)
-    def _on_thumbnail_loaded(self, key: str, pixmap: QPixmap) -> None:
+    @Slot(str, QImage)
+    def _on_thumbnail_loaded(self, key: str, image: QImage) -> None:
         label = self._thumb_labels.get(key)
         if label is None:
             return
+        pixmap = QPixmap.fromImage(image)
         scaled = pixmap.scaled(
             THUMB_SIZE,
             THUMB_SIZE,

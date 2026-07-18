@@ -7,11 +7,11 @@ from pathlib import Path
 
 from PIL import Image
 from PySide6.QtCore import QObject, QRunnable, Qt, Signal
-from PySide6.QtGui import QImage, QPixmap
+from PySide6.QtGui import QImage
 
 
 class ThumbnailSignals(QObject):
-    loaded = Signal(str, QPixmap)
+    loaded = Signal(str, QImage)
 
 
 class ThumbnailLoader(QRunnable):
@@ -44,10 +44,13 @@ class ThumbnailLoader(QRunnable):
                 buffer = io.BytesIO()
                 img.save(buffer, format="PNG")
                 qimage = QImage.fromData(buffer.getvalue(), "PNG")
-                pixmap = QPixmap.fromImage(qimage)
         except Exception:
-            pixmap = QPixmap(self.size, self.size)
-            pixmap.fill(Qt.GlobalColor.lightGray)
+            qimage = QImage(
+                self.size,
+                self.size,
+                QImage.Format.Format_ARGB32,
+            )
+            qimage.fill(Qt.GlobalColor.lightGray)
 
         if self.generation == self.generation_holder[0]:
-            self.signals.loaded.emit(self.key, pixmap)
+            self.signals.loaded.emit(self.key, qimage)

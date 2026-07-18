@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QThreadPool
 from PySide6.QtGui import QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import QMainWindow, QTabWidget
 
@@ -13,6 +13,8 @@ from ui.history_tab import HistoryTab
 from ui.inbound_tab import InboundTab
 from ui.product_tab import ProductTab
 from ui.sales_ranking_tab import SalesRankingTab
+
+MAX_THUMBNAIL_THREADS = 4
 
 
 class DroppableTabWidget(QTabWidget):
@@ -48,9 +50,28 @@ class DroppableTabWidget(QTabWidget):
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
+        self.setWindowFlags(
+            Qt.WindowType.Window
+            | Qt.WindowType.WindowTitleHint
+            | Qt.WindowType.WindowSystemMenuHint
+            | Qt.WindowType.WindowMinMaxButtonsHint
+            | Qt.WindowType.WindowCloseButtonHint
+        )
         self.setWindowTitle("卡牌库存管理")
+        self.setMinimumSize(800, 600)
         self.resize(1200, 800)
         self.setAcceptDrops(True)
+
+        thumbnail_pool = QThreadPool.globalInstance()
+        thumbnail_pool.setMaxThreadCount(
+            max(
+                1,
+                min(
+                    MAX_THUMBNAIL_THREADS,
+                    thumbnail_pool.maxThreadCount(),
+                ),
+            )
+        )
 
         tabs = DroppableTabWidget()
         tabs.setAcceptDrops(True)

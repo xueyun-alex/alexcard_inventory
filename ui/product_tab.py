@@ -12,7 +12,14 @@ from PySide6.QtCore import (
     Signal,
     Slot,
 )
-from PySide6.QtGui import QDrag, QKeySequence, QMouseEvent, QPixmap, QShortcut
+from PySide6.QtGui import (
+    QDrag,
+    QImage,
+    QKeySequence,
+    QMouseEvent,
+    QPixmap,
+    QShortcut,
+)
 from PySide6.QtWidgets import (
     QAbstractSpinBox,
     QApplication,
@@ -43,6 +50,7 @@ from PySide6.QtWidgets import (
 from db import models
 from db.models import Category, ImportDuplicate, Product
 from ui.file_drop import enable_file_drop
+from ui.stock_decrease_dialog import StockDecreaseDialog
 from ui.thumbnails import ThumbnailLoader, ThumbnailSignals
 
 THUMB_SIZE = 120
@@ -219,11 +227,12 @@ class DuplicateProductsDialog(QDialog):
         )
         self._thread_pool.start(loader)
 
-    @Slot(str, QPixmap)
-    def _on_thumbnail_loaded(self, key: str, pixmap: QPixmap) -> None:
+    @Slot(str, QImage)
+    def _on_thumbnail_loaded(self, key: str, image: QImage) -> None:
         label = self._thumb_labels.get(key)
         if label is None:
             return
+        pixmap = QPixmap.fromImage(image)
         scaled = pixmap.scaled(
             DIALOG_THUMB_SIZE,
             DIALOG_THUMB_SIZE,
@@ -787,15 +796,15 @@ class ProductTab(QWidget):
             )
             self._thread_pool.start(loader)
 
-    @Slot(str, QPixmap)
-    def _on_thumbnail_loaded(self, key: str, pixmap: QPixmap) -> None:
+    @Slot(str, QImage)
+    def _on_thumbnail_loaded(self, key: str, image: QImage) -> None:
         try:
             product_id = int(key)
         except ValueError:
             return
         card = self._cards.get(product_id)
         if card is not None:
-            card.set_pixmap(pixmap)
+            card.set_pixmap(QPixmap.fromImage(image))
 
     def _show_original_image(self, product: Product) -> None:
         image_path = models.get_product_image_path(product)
@@ -1221,8 +1230,90 @@ class ProductTab(QWidget):
         if delta == 0:
             return
 
+        if delta < 0:
+            products: list[Product] = []
+            for product_id in product_ids:
+                current = models.get_product(product_id)
+                if current is not None:
+                    products.append(current)
+            if len(products) != len(product_ids):
+                QMessageBox.warning(self, "错误", "部分商品已不存在，请刷新后重试。")
+                return
+
+            decrease_dialog = StockDecreaseDialog(products, abs(delta), self)
+            if decrease_dialog.exec() != QDialog.DialogCode.Accepted:
+                return
+
+            from datetime import datetime
+            from uuid import uuid4
+
+            from PySide6.QtWidgets import QFileDialog
+
+            from core.collage import build_vertical_stock_export
+
+            default_name = (
+                f"库存减少清单_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+            )
+            file_path, _ = QFileDialog.getSaveFileName(
+                self,
+                "导出库存减少清单",
+                default_name,
+                "PNG 图片 (*.png);;JPG 图片 (*.jpg *.jpeg)",
+            )
+            if not file_path:
+                return
+
+            output_path = Path(file_path)
+            temp_suffix = output_path.suffix or ".png"
+            temp_path = output_path.with_name(
+                f".{output_path.stem}.{uuid4().hex}.tmp{temp_suffix}"
+            )
+            export_items = [
+                (
+                    selection.product.name,
+                    models.get_product_image_path(selection.product),
+                    selection.package_type,
+                    selection.quantity,
+                )
+                for selection in decrease_dialog.selections
+            ]
+            stock_changes = [
+                (selection.product.id, -selection.quantity)
+                for selection in decrease_dialog.selections
+            ]
+            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+            try:
+                added, skipped = build_vertical_stock_export(
+                    export_items,
+                    temp_path,
+                )
+            except Exception as exc:
+                temp_path.unlink(missing_ok=True)
+                QMessageBox.warning(self, "导出失败", str(exc))
+                return
+            finally:
+                QApplication.restoreOverrideCursor()
+
+            if added != len(export_items):
+                temp_path.unlink(missing_ok=True)
+                QMessageBox.warning(
+                    self,
+                    "导出失败",
+                    f"有 {skipped} 个商品图片缺失或无法读取，库存未改变。",
+                )
+                return
+
         try:
-            if len(product_ids) == 1:
+            if delta < 0:
+                models.adjust_stock_items(stock_changes)
+                for product_id, _product_delta in stock_changes:
+                    updated = models.get_product(product_id)
+                    if updated is None:
+                        continue
+                    card = self._cards.get(product_id)
+                    if card is not None:
+                        card.update_stock(updated.stock)
+            elif len(product_ids) == 1:
                 models.increment_stock(product_ids[0], delta, "manual")
                 updated = models.get_product(product_ids[0])
                 if updated is not None:
@@ -1243,7 +1334,27 @@ class ProductTab(QWidget):
             self.refresh_categories()
             self.data_changed.emit()
         except Exception as exc:
+            if delta < 0:
+                temp_path.unlink(missing_ok=True)
             QMessageBox.warning(self, "错误", str(exc))
+            return
+
+        if delta < 0:
+            try:
+                temp_path.replace(output_path)
+            except OSError as exc:
+                QMessageBox.critical(
+                    self,
+                    "清单保存失败",
+                    "库存已经减少，但清单图片无法保存到所选位置。"
+                    f"\n临时图片仍保留在：\n{temp_path}\n\n{exc}",
+                )
+                return
+            QMessageBox.information(
+                self,
+                "操作完成",
+                f"库存已减少，清单图片已导出到：\n{file_path}",
+            )
 
     def rename_product_dialog(self, product: Product) -> None:
         name, ok = QInputDialog.getText(
