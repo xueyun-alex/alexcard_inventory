@@ -109,10 +109,12 @@ def build_collage(
 def build_vertical_stock_export(
     items: list[tuple[str, Path, str, int]],
     output_path: Path,
+    display_number: str = "",
 ) -> tuple[int, int]:
     """Build a vertical stock-decrease summary.
 
     Each item is ``(product_name, image_path, package_type, quantity)``.
+    When supplied, ``display_number`` is shown below the export title.
     Returns ``(added_count, skipped_count)``.
     """
     loaded: list[tuple[str, Image.Image, str, int]] = []
@@ -131,7 +133,8 @@ def build_vertical_stock_export(
 
     canvas_width = 720
     horizontal_padding = 28
-    header_height = 96
+    display_number = display_number.strip()
+    header_height = 140 if display_number else 96
     row_height = 272
     row_spacing = 16
     image_size = 232
@@ -145,6 +148,7 @@ def build_vertical_stock_export(
     canvas = Image.new("RGB", (canvas_width, canvas_height), (245, 247, 250))
     draw = ImageDraw.Draw(canvas)
     title_font = _load_font(30)
+    number_font = _load_font(22)
     name_font = _load_font(24)
     detail_font = _load_font(22)
 
@@ -156,6 +160,19 @@ def build_vertical_stock_export(
         font=title_font,
         fill=(20, 26, 35),
     )
+    if display_number:
+        number_label = _truncate_text(
+            f"编号：{display_number}",
+            number_font,
+            canvas_width - horizontal_padding * 2,
+        )
+        number_width = number_font.getlength(number_label)
+        draw.text(
+            ((canvas_width - number_width) / 2, 76),
+            number_label,
+            font=number_font,
+            fill=(75, 84, 96),
+        )
 
     for index, (name, img, package_type, quantity) in enumerate(loaded):
         row_y = header_height + horizontal_padding + index * (

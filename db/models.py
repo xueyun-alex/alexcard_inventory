@@ -569,33 +569,40 @@ def adjust_stock_batch(product_ids: list[int], delta: int) -> None:
     adjust_stock_items([(product_id, delta) for product_id in product_ids])
 
 
-def adjust_stock_items(items: list[tuple[int, int]]) -> None:
-    """Apply per-product stock deltas as one logged manual operation."""
+def adjust_stock_items(
+    items: list[tuple[int, int]],
+    *,
+    source: str = "manual",
+) -> None:
+    """Apply per-product stock deltas as one logged operation."""
     items = [(product_id, delta) for product_id, delta in items if delta != 0]
     if not items:
         return
+    source = source.strip()
+    if not source:
+        raise ValueError("库存变更来源不能为空")
     from db import changelog
 
     with get_connection() as conn:
         entries: list[dict] = []
         for product_id, delta in items:
             inventory_log_id, stock_before, _product_name = _increment_stock_core(
-                conn, product_id, delta, "manual", None
+                conn, product_id, delta, source, None
             )
             entries.append(
                 {
                     "product_id": product_id,
                     "delta": delta,
-                    "source": "manual",
+                    "source": source,
                     "inventory_log_id": inventory_log_id,
                     "stock_before": stock_before,
                 }
             )
-        summary = changelog.format_stock_batch_summary(conn, entries, "manual")
+        summary = changelog.format_stock_batch_summary(conn, entries, source)
         changelog.record_change(
             "stock_batch",
             summary,
-            {"source": "manual", "entries": entries},
+            {"source": source, "entries": entries},
             conn=conn,
         )
         conn.commit()

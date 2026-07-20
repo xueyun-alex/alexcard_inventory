@@ -1244,68 +1244,77 @@ class ProductTab(QWidget):
             if decrease_dialog.exec() != QDialog.DialogCode.Accepted:
                 return
 
-            from datetime import datetime
-            from uuid import uuid4
-
-            from PySide6.QtWidgets import QFileDialog
-
-            from core.collage import build_vertical_stock_export
-
-            default_name = (
-                f"库存减少清单_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
-            )
-            file_path, _ = QFileDialog.getSaveFileName(
-                self,
-                "导出库存减少清单",
-                default_name,
-                "PNG 图片 (*.png);;JPG 图片 (*.jpg *.jpeg)",
-            )
-            if not file_path:
-                return
-
-            output_path = Path(file_path)
-            temp_suffix = output_path.suffix or ".png"
-            temp_path = output_path.with_name(
-                f".{output_path.stem}.{uuid4().hex}.tmp{temp_suffix}"
-            )
-            export_items = [
-                (
-                    selection.product.name,
-                    models.get_product_image_path(selection.product),
-                    selection.package_type,
-                    selection.quantity,
-                )
-                for selection in decrease_dialog.selections
-            ]
+            selections = decrease_dialog.selections
+            export_requested = decrease_dialog.export_requested
             stock_changes = [
                 (selection.product.id, -selection.quantity)
-                for selection in decrease_dialog.selections
+                for selection in selections
             ]
-            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-            try:
-                added, skipped = build_vertical_stock_export(
-                    export_items,
-                    temp_path,
-                )
-            except Exception as exc:
-                temp_path.unlink(missing_ok=True)
-                QMessageBox.warning(self, "导出失败", str(exc))
-                return
-            finally:
-                QApplication.restoreOverrideCursor()
 
-            if added != len(export_items):
-                temp_path.unlink(missing_ok=True)
-                QMessageBox.warning(
-                    self,
-                    "导出失败",
-                    f"有 {skipped} 个商品图片缺失或无法读取，库存未改变。",
+            if export_requested:
+                from datetime import datetime
+                from uuid import uuid4
+
+                from PySide6.QtWidgets import QFileDialog
+
+                from core.collage import build_vertical_stock_export
+
+                default_name = (
+                    "库存减少清单_"
+                    f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
                 )
-                return
+                file_path, _ = QFileDialog.getSaveFileName(
+                    self,
+                    "导出库存减少清单",
+                    default_name,
+                    "PNG 图片 (*.png);;JPG 图片 (*.jpg *.jpeg)",
+                )
+                if not file_path:
+                    return
+
+                output_path = Path(file_path)
+                temp_suffix = output_path.suffix or ".png"
+                temp_path = output_path.with_name(
+                    f".{output_path.stem}.{uuid4().hex}.tmp{temp_suffix}"
+                )
+                export_items = [
+                    (
+                        selection.product.name,
+                        models.get_product_image_path(selection.product),
+                        selection.package_type,
+                        selection.quantity,
+                    )
+                    for selection in selections
+                ]
+                QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+                try:
+                    added, skipped = build_vertical_stock_export(
+                        export_items,
+                        temp_path,
+                        decrease_dialog.export_number,
+                    )
+                except Exception as exc:
+                    temp_path.unlink(missing_ok=True)
+                    QMessageBox.warning(self, "导出失败", str(exc))
+                    return
+                finally:
+                    QApplication.restoreOverrideCursor()
+
+                if added != len(export_items):
+                    temp_path.unlink(missing_ok=True)
+                    QMessageBox.warning(
+                        self,
+                        "导出失败",
+                        f"有 {skipped} 个商品图片缺失或无法读取，库存未改变。",
+                    )
+                    return
 
         try:
             if delta < 0:
-                models.adjust_stock_items(stock_changes)
+                models.adjust_stock_items(
+                    stock_changes,
+                    source="manual" if export_requested else "stock_only",
+                )
                 for product_id, _product_delta in stock_changes:
                     updated = models.get_product(product_id)
                     if updated is None:
@@ -1334,27 +1343,34 @@ class ProductTab(QWidget):
             self.refresh_categories()
             self.data_changed.emit()
         except Exception as exc:
-            if delta < 0:
+            if delta < 0 and export_requested:
                 temp_path.unlink(missing_ok=True)
             QMessageBox.warning(self, "错误", str(exc))
             return
 
         if delta < 0:
-            try:
-                temp_path.replace(output_path)
-            except OSError as exc:
-                QMessageBox.critical(
+            if export_requested:
+                try:
+                    temp_path.replace(output_path)
+                except OSError as exc:
+                    QMessageBox.critical(
+                        self,
+                        "清单保存失败",
+                        "库存已经减少，但清单图片无法保存到所选位置。"
+                        f"\n临时图片仍保留在：\n{temp_path}\n\n{exc}",
+                    )
+                    return
+                QMessageBox.information(
                     self,
-                    "清单保存失败",
-                    "库存已经减少，但清单图片无法保存到所选位置。"
-                    f"\n临时图片仍保留在：\n{temp_path}\n\n{exc}",
+                    "操作完成",
+                    f"库存已减少，清单图片已导出到：\n{file_path}",
                 )
-                return
-            QMessageBox.information(
-                self,
-                "操作完成",
-                f"库存已减少，清单图片已导出到：\n{file_path}",
-            )
+            else:
+                QMessageBox.information(
+                    self,
+                    "操作完成",
+                    "库存已减少；本次操作未计入销量排行榜，也未导出图片。",
+                )
 
     def rename_product_dialog(self, product: Product) -> None:
         name, ok = QInputDialog.getText(

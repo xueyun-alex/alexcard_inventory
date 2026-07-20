@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QPixmap
+from PySide6.QtCore import QRegularExpression, Qt
+from PySide6.QtGui import QPixmap, QRegularExpressionValidator
 from PySide6.QtWidgets import (
     QAbstractSpinBox,
     QComboBox,
@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
     QScrollArea,
     QSpinBox,
@@ -46,6 +47,7 @@ class StockDecreaseDialog(QDialog):
         self._products = products
         self._combos: dict[int, QComboBox] = {}
         self._quantity_spins: dict[int, QSpinBox] = {}
+        self._export_requested = True
         self.setWindowTitle("选择出库包装")
         self.setMinimumWidth(680)
 
@@ -55,6 +57,17 @@ class StockDecreaseDialog(QDialog):
         )
         hint.setWordWrap(True)
         layout.addWidget(hint)
+
+        number_row = QHBoxLayout()
+        number_row.addWidget(QLabel("导出图片编号（可选）"))
+        self.export_number_edit = QLineEdit()
+        self.export_number_edit.setPlaceholderText("输入一串数字，将显示在导出图片中")
+        self.export_number_edit.setMaxLength(64)
+        self.export_number_edit.setValidator(
+            QRegularExpressionValidator(QRegularExpression(r"\d*"), self)
+        )
+        number_row.addWidget(self.export_number_edit, stretch=1)
+        layout.addLayout(number_row)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -74,12 +87,25 @@ class StockDecreaseDialog(QDialog):
         )
         buttons.button(QDialogButtonBox.StandardButton.Ok).setText("确定并导出")
         buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
-        buttons.accepted.connect(self.accept)
+        stock_only_button = buttons.addButton(
+            "仅减少库存",
+            QDialogButtonBox.ButtonRole.ActionRole,
+        )
+        buttons.accepted.connect(self._accept_with_export)
+        stock_only_button.clicked.connect(self._accept_stock_only)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
         visible_rows = min(len(products), 5)
         self.resize(720, min(180 + visible_rows * 126, 780))
+
+    def _accept_with_export(self) -> None:
+        self._export_requested = True
+        self.accept()
+
+    def _accept_stock_only(self, _checked: bool = False) -> None:
+        self._export_requested = False
+        self.accept()
 
     def _build_product_row(self, product: Product, quantity: int) -> QFrame:
         frame = QFrame()
@@ -162,3 +188,11 @@ class StockDecreaseDialog(QDialog):
             )
             for product in self._products
         ]
+
+    @property
+    def export_requested(self) -> bool:
+        return self._export_requested
+
+    @property
+    def export_number(self) -> str:
+        return self.export_number_edit.text().strip()

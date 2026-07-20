@@ -166,7 +166,11 @@ def format_stock_batch_summary(
     entries: list[dict],
     source: str,
 ) -> str:
-    source_label = {"manual": "手动", "inbound": "入库"}.get(source, source)
+    source_label = {
+        "manual": "手动",
+        "inbound": "入库",
+        "stock_only": "仅减库存",
+    }.get(source, source)
     if len(entries) == 1:
         entry = entries[0]
         row = conn.execute(

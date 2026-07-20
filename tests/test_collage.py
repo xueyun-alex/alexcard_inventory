@@ -49,6 +49,28 @@ class VerticalStockExportTests(unittest.TestCase):
             self.assertEqual(result, (0, 1))
             self.assertFalse(output.exists())
 
+    def test_displays_number_in_export_header(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            product = root / "product.png"
+            Image.new("RGB", (120, 180), "red").save(product)
+            output = root / "numbered-summary.png"
+
+            result = build_vertical_stock_export(
+                [("商品一", product, "带卡砖", 1)],
+                output,
+                "1234567890",
+            )
+
+            self.assertEqual(result, (1, 0))
+            with Image.open(output) as image:
+                self.assertEqual(image.size, (720, 468))
+                header_colors = image.crop((0, 70, 720, 110)).getcolors(
+                    maxcolors=720 * 40
+                )
+                self.assertIsNotNone(header_colors)
+                self.assertGreater(len(header_colors or []), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
