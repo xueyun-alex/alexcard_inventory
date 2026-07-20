@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from PySide6.QtCore import QRegularExpression, Qt
-from PySide6.QtGui import QPixmap, QRegularExpressionValidator
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QAbstractSpinBox,
     QComboBox,
@@ -53,20 +53,17 @@ class StockDecreaseDialog(QDialog):
 
         layout = QVBoxLayout(self)
         hint = QLabel(
-            "请选择每个商品的包装类型，并用 − / + 调整本次减少数量。"
+            "请选择每个商品的包装类型和减少数量；导出后会自动创建货单。"
         )
         hint.setWordWrap(True)
         layout.addWidget(hint)
 
         number_row = QHBoxLayout()
-        number_row.addWidget(QLabel("导出图片编号（可选）"))
-        self.export_number_edit = QLineEdit()
-        self.export_number_edit.setPlaceholderText("输入一串数字，将显示在导出图片中")
-        self.export_number_edit.setMaxLength(64)
-        self.export_number_edit.setValidator(
-            QRegularExpressionValidator(QRegularExpression(r"\d*"), self)
-        )
-        number_row.addWidget(self.export_number_edit, stretch=1)
+        number_row.addWidget(QLabel("货单编号（可选）"))
+        self.order_number_edit = QLineEdit()
+        self.order_number_edit.setPlaceholderText("留空将自动生成，例如 20260720-001")
+        self.order_number_edit.setMaxLength(64)
+        number_row.addWidget(self.order_number_edit, stretch=1)
         layout.addLayout(number_row)
 
         scroll = QScrollArea()
@@ -194,5 +191,5 @@ class StockDecreaseDialog(QDialog):
         return self._export_requested
 
     @property
-    def export_number(self) -> str:
-        return self.export_number_edit.text().strip()
+    def order_number(self) -> str:
+        return self.order_number_edit.text().strip()

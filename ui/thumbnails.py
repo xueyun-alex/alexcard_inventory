@@ -35,7 +35,12 @@ class ThumbnailLoader(QRunnable):
         self.generation_holder = generation_holder
 
     def run(self) -> None:
-        if self.generation != self.generation_holder[0]:
+        try:
+            generation = self.generation
+            generation_holder = self.generation_holder
+        except (AttributeError, RuntimeError):
+            return
+        if generation != generation_holder[0]:
             return
         try:
             with Image.open(self.image_path) as img:
@@ -52,5 +57,9 @@ class ThumbnailLoader(QRunnable):
             )
             qimage.fill(Qt.GlobalColor.lightGray)
 
-        if self.generation == self.generation_holder[0]:
-            self.signals.loaded.emit(self.key, qimage)
+        if generation == generation_holder[0]:
+            try:
+                self.signals.loaded.emit(self.key, qimage)
+            except RuntimeError:
+                # The owning widget may have closed while this worker finished.
+                return

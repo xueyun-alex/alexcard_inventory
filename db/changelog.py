@@ -22,6 +22,9 @@ KIND_LABELS: dict[str, str] = {
     "product_create_batch": "新增",
     "product_rename": "重命名产品",
     "product_delete": "删除产品",
+    "order_create": "新建货单",
+    "order_update": "修改货单",
+    "order_delete": "删除货单",
 }
 
 
@@ -170,6 +173,7 @@ def format_stock_batch_summary(
         "manual": "手动",
         "inbound": "入库",
         "stock_only": "仅减库存",
+        "order": "货单",
     }.get(source, source)
     if len(entries) == 1:
         entry = entries[0]
@@ -197,7 +201,12 @@ def check_revert_would_negative_stock(log: ChangeLog) -> list[tuple[str, int]]:
     entries: list[dict]
     if log.kind == "stock":
         entries = [log.payload]
-    elif log.kind == "stock_batch":
+    elif log.kind in (
+        "stock_batch",
+        "order_create",
+        "order_update",
+        "order_delete",
+    ):
         entries = log.payload.get("entries", [])
     else:
         return warnings
@@ -259,6 +268,12 @@ def revert_change(log_id: int) -> None:
             _revert_product_rename(conn, log)
         elif log.kind == "product_delete":
             _revert_product_delete(conn, log)
+        elif log.kind == "order_create":
+            _revert_order_create(conn, log)
+        elif log.kind == "order_update":
+            _revert_order_update(conn, log)
+        elif log.kind == "order_delete":
+            _revert_order_delete(conn, log)
         else:
             raise ValueError(f"不支持回退的操作类型: {log.kind}")
 
@@ -301,6 +316,68 @@ def _revert_stock(conn: sqlite3.Connection, log: ChangeLog) -> None:
                 """,
                 (_now_local(), inventory_log_id),
             )
+
+
+def _ensure_latest_order_change(
+    conn: sqlite3.Connection,
+    log: ChangeLog,
+) -> None:
+    order_id = log.payload["order_id"]
+    rows = conn.execute(
+        """
+        SELECT id, payload_json
+        FROM change_logs
+        WHERE kind IN ('order_create', 'order_update', 'order_delete')
+          AND reverted_at IS NULL
+        ORDER BY id DESC
+        """
+    ).fetchall()
+    latest_id = next(
+        (
+            row["id"]
+            for row in rows
+            if json.loads(row["payload_json"]).get("order_id") == order_id
+        ),
+        None,
+    )
+    if latest_id != log.id:
+        raise ValueError("该货单还有更晚的修改，请先回退最新的货单操作")
+
+
+def _revert_order_create(conn: sqlite3.Connection, log: ChangeLog) -> None:
+    _ensure_latest_order_change(conn, log)
+    order_id = log.payload["order_id"]
+    row = conn.execute(
+        "SELECT id FROM orders WHERE id = ?",
+        (order_id,),
+    ).fetchone()
+    if row is None:
+        raise ValueError("货单已不存在，无法回退")
+    _revert_stock(conn, log)
+    conn.execute("DELETE FROM orders WHERE id = ?", (order_id,))
+
+
+def _revert_order_update(conn: sqlite3.Connection, log: ChangeLog) -> None:
+    _ensure_latest_order_change(conn, log)
+    from db.orders import restore_order_snapshot
+
+    _revert_stock(conn, log)
+    restore_order_snapshot(conn, log.payload["old_order"])
+
+
+def _revert_order_delete(conn: sqlite3.Connection, log: ChangeLog) -> None:
+    _ensure_latest_order_change(conn, log)
+    from db.orders import insert_order_snapshot
+
+    order_id = log.payload["order_id"]
+    row = conn.execute(
+        "SELECT id FROM orders WHERE id = ?",
+        (order_id,),
+    ).fetchone()
+    if row is not None:
+        raise ValueError("货单已经存在，无法回退删除")
+    _revert_stock(conn, log)
+    insert_order_snapshot(conn, log.payload["old_order"])
 
 
 def _revert_category_move(conn: sqlite3.Connection, log: ChangeLog) -> None:

@@ -946,22 +946,39 @@ def get_product_image_path(product: Product) -> Path:
 
 
 def list_sales_ranking(start: str, end: str) -> list[SalesRankingRow]:
-    """Rank products by summed manual stock decreases in [start, end]."""
+    """Rank products by legacy manual sales and current order quantities."""
     with get_connection() as conn:
         rows = conn.execute(
             """
-            SELECT p.id, p.name, p.image_path, SUM(-il.delta) AS sold_qty
-            FROM inventory_logs il
-            JOIN products p ON p.id = il.product_id
-            WHERE il.source = 'manual'
-              AND il.delta < 0
-              AND il.reverted_at IS NULL
-              AND il.created_at >= ?
-              AND il.created_at <= ?
-            GROUP BY p.id
+            WITH sales AS (
+                SELECT il.product_id, SUM(-il.delta) AS quantity
+                FROM inventory_logs AS il
+                WHERE il.source = 'manual'
+                  AND il.delta < 0
+                  AND il.reverted_at IS NULL
+                  AND il.created_at >= ?
+                  AND il.created_at <= ?
+                GROUP BY il.product_id
+
+                UNION ALL
+
+                SELECT oi.product_id, SUM(oi.quantity) AS quantity
+                FROM order_items AS oi
+                JOIN orders AS o ON o.id = oi.order_id
+                WHERE oi.product_id IS NOT NULL
+                  AND o.created_at >= ?
+                  AND o.created_at <= ?
+                GROUP BY oi.product_id
+            )
+            SELECT p.id, p.name, p.image_path,
+                   SUM(sales.quantity) AS sold_qty
+            FROM sales
+            JOIN products AS p ON p.id = sales.product_id
+            GROUP BY p.id, p.name, p.image_path
+            HAVING sold_qty > 0
             ORDER BY sold_qty DESC
             """,
-            (start, end),
+            (start, end, start, end),
         ).fetchall()
     return [
         SalesRankingRow(

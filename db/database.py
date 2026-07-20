@@ -57,6 +57,33 @@ CREATE TABLE IF NOT EXISTS change_logs (
 CREATE INDEX IF NOT EXISTS idx_change_logs_created ON change_logs(created_at DESC);
 """
 
+_ORDERS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS orders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_no TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL DEFAULT '待发货'
+        CHECK (status IN ('待发货', '已发货', '已成交')),
+    export_path TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+);
+CREATE INDEX IF NOT EXISTS idx_orders_created ON orders(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
+
+CREATE TABLE IF NOT EXISTS order_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+    product_id INTEGER NULL REFERENCES products(id) ON DELETE SET NULL,
+    product_name TEXT NOT NULL,
+    image_path TEXT NOT NULL,
+    package_type TEXT NOT NULL,
+    quantity INTEGER NOT NULL CHECK (quantity > 0),
+    UNIQUE(order_id, product_id)
+);
+CREATE INDEX IF NOT EXISTS idx_order_items_order ON order_items(order_id);
+CREATE INDEX IF NOT EXISTS idx_order_items_product ON order_items(product_id);
+"""
+
 
 def _migrate_schema(conn: sqlite3.Connection) -> None:
     category_columns = {
@@ -112,6 +139,7 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     )
     conn.executescript(_INVENTORY_LOGS_SCHEMA)
     conn.executescript(_CHANGE_LOGS_SCHEMA)
+    conn.executescript(_ORDERS_SCHEMA)
 
     inv_columns = {
         row[1] for row in conn.execute("PRAGMA table_info(inventory_logs)").fetchall()

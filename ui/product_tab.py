@@ -47,7 +47,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from db import models
+from db import models, orders
 from db.models import Category, ImportDuplicate, Product
 from ui.file_drop import enable_file_drop
 from ui.stock_decrease_dialog import StockDecreaseDialog
@@ -1259,9 +1259,19 @@ class ProductTab(QWidget):
 
                 from core.collage import build_vertical_stock_export
 
+                order_no = (
+                    decrease_dialog.order_number or orders.next_order_number()
+                )
+                if orders.order_number_exists(order_no):
+                    QMessageBox.warning(
+                        self,
+                        "货单编号重复",
+                        f"货单编号「{order_no}」已存在，请修改后重试。",
+                    )
+                    return
                 default_name = (
-                    "库存减少清单_"
-                    f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+                    f"库存减少清单_{orders.safe_filename_part(order_no)}_"
+                    f"{datetime.now().strftime('%H%M%S')}.png"
                 )
                 file_path, _ = QFileDialog.getSaveFileName(
                     self,
@@ -1291,7 +1301,7 @@ class ProductTab(QWidget):
                     added, skipped = build_vertical_stock_export(
                         export_items,
                         temp_path,
-                        decrease_dialog.export_number,
+                        order_no,
                     )
                 except Exception as exc:
                     temp_path.unlink(missing_ok=True)
@@ -1311,10 +1321,25 @@ class ProductTab(QWidget):
 
         try:
             if delta < 0:
-                models.adjust_stock_items(
-                    stock_changes,
-                    source="manual" if export_requested else "stock_only",
-                )
+                if export_requested:
+                    order_items = [
+                        (
+                            selection.product.id,
+                            selection.package_type,
+                            selection.quantity,
+                        )
+                        for selection in selections
+                    ]
+                    created_order = orders.create_order(
+                        order_no,
+                        order_items,
+                        str(output_path),
+                    )
+                else:
+                    models.adjust_stock_items(
+                        stock_changes,
+                        source="stock_only",
+                    )
                 for product_id, _product_delta in stock_changes:
                     updated = models.get_product(product_id)
                     if updated is None:
@@ -1353,6 +1378,7 @@ class ProductTab(QWidget):
                 try:
                     temp_path.replace(output_path)
                 except OSError as exc:
+                    orders.set_export_path(created_order.id, str(temp_path))
                     QMessageBox.critical(
                         self,
                         "清单保存失败",

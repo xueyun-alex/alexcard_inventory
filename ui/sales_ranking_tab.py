@@ -36,7 +36,10 @@ class SalesRankingTab(QWidget):
 
         layout = QVBoxLayout(self)
         layout.addWidget(
-            QLabel("按时间范围内手动库存减少总量排名（已回退的变更不计入）。")
+            QLabel(
+                "按时间范围内货单商品数量和历史手动库存减少量排名"
+                "（已回退的变更不计入）。"
+            )
         )
 
         filter_row = QHBoxLayout()
